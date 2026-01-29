@@ -154,7 +154,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "use_fake_hardware",
-            default_value="false",
+            # default_value="false",
+            default_value="true",
             description="Use fake hardware instead of real hardware.",
         ),
         DeclareLaunchArgument(

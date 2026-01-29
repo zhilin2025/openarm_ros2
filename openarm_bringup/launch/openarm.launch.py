@@ -32,6 +32,7 @@ from launch_ros.substitutions import FindPackageShare
 def generate_robot_description(context: LaunchContext, description_package, description_file,
                                arm_type, use_fake_hardware, can_interface, arm_prefix):
     """Generate robot description using xacro processing."""
+    """返回值是一个包含 robot_description（URDF/XML）的字符串，用于作为参数传给 robot_state_publisher 和 ros2_control_node，供后续启动节点读取机器人模型与 ros2_control 配置。"""
 
     # Substitute launch configuration values
     description_package_str = context.perform_substitution(description_package)
@@ -85,7 +86,9 @@ def robot_nodes_spawner(context: LaunchContext, description_package, description
         parameters=[robot_description_param],
     )
 
-    # Control node
+    # Control node， 提供硬件接口和 controller_manager 服务
+    # 启动ros2_control，包含 controller_manager、硬件接口（hardware_interface）插件、以及根据 robot_description / controllers 配置初始化的底层驱动逻辑，“承载”所有控制器插件和与硬件交互的进程
+    # 下面的三个spawner 节点调用 controller_manager 的服务去 load/start 指定控制器，controller_manager 在自己的进程内实例化并运行这些控制器插件。
     control_node = Node(
         package="controller_manager",
         executable="ros2_control_node",
@@ -118,7 +121,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "use_fake_hardware",
-            default_value="false",
+            # default_value="false",
+            default_value="true",
             description="Use fake hardware instead of real hardware.",
         ),
         DeclareLaunchArgument(
@@ -187,6 +191,7 @@ def generate_launch_description():
     )
 
     # Joint state broadcaster spawner
+    # 加载并启动名为 joint_state_broadcaster 的控制器。该控制器发布 /joint_states（机器人各关节的状态），供 tf（robot_state_publisher）和上层控制器/监视组件使用
     joint_state_broadcaster_spawner = Node(
         package="controller_manager",
         executable="spawner",
@@ -195,6 +200,7 @@ def generate_launch_description():
     )
 
     # Controller spawners
+    # 使用 launch 参数 robot_controller（默认 joint_trajectory_controller）去加载并启动移动臂的主控制器（通常是 joint_trajectory_controller）。该控制器负责接收轨迹命令（通常暴露 /follow_joint_trajectory 动作服务器或相应话题/接口），因此你可以用 ros2 action send_goal 给机械臂发送轨迹目标
     robot_controller_spawner = Node(
         package="controller_manager",
         executable="spawner",
@@ -208,6 +214,7 @@ def generate_launch_description():
     )
 
     # Timing and sequencing
+    # 确保 ros2_control_node / controller_manager 已就绪后再加载控制器，避免启动顺序问题（整个控制节点启动之后再加载各个控制器）
     delayed_joint_state_broadcaster = TimerAction(
         period=1.0,
         actions=[joint_state_broadcaster_spawner],
