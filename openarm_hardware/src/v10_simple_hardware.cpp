@@ -17,6 +17,9 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <sstream>
+#include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -28,7 +31,67 @@ namespace openarm_hardware {
 
 OpenArm_v10HW::OpenArm_v10HW() = default;
 
+std::vector<uint8_t> OpenArm_v10HW::parse_u8_list(const std::string& value,
+                                                  size_t expected_size) const {
+  std::vector<uint8_t> out;
+  std::stringstream ss(value);
+  std::string token;
+
+  while (std::getline(ss, token, ',')) {
+    token.erase(std::remove_if(token.begin(), token.end(), ::isspace),
+                token.end());
+    if (token.empty()) {
+      continue;
+    }
+    int parsed = std::stoi(token);
+    if (parsed < 0 || parsed > 255) {
+      throw std::runtime_error("uint8 list element out of range: " + token);
+    }
+    out.push_back(static_cast<uint8_t>(parsed));
+  }
+
+  if (out.size() != expected_size) {
+    throw std::runtime_error("uint8 list size mismatch, expected " +
+                             std::to_string(expected_size) + ", got " +
+                             std::to_string(out.size()));
+  }
+  return out;
+}
+
+std::vector<int> OpenArm_v10HW::parse_int_list(const std::string& value,
+                                               size_t expected_size) const {
+  std::vector<int> out;
+  std::stringstream ss(value);
+  std::string token;
+
+  while (std::getline(ss, token, ',')) {
+    token.erase(std::remove_if(token.begin(), token.end(), ::isspace),
+                token.end());
+    if (token.empty()) {
+      continue;
+    }
+    out.push_back(std::stoi(token));
+  }
+
+  if (out.size() != expected_size) {
+    throw std::runtime_error("int list size mismatch, expected " +
+                             std::to_string(expected_size) + ", got " +
+                             std::to_string(out.size()));
+  }
+  return out;
+}
+
 bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
+  auto parse_bool = [](const std::string& value, bool default_value) {
+    if (value.empty()) {
+      return default_value;
+    }
+    std::string normalized = value;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   ::tolower);
+    return normalized == "true" || normalized == "1" || normalized == "yes";
+  };
+
   // Parse CAN interface (default: can0)
   auto it = info.hardware_parameters.find("can_interface");
   can_interface_ = (it != info.hardware_parameters.end()) ? it->second : "can0";
@@ -38,27 +101,34 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
   it = info.hardware_parameters.find("arm_prefix");
   arm_prefix_ = (it != info.hardware_parameters.end()) ? it->second : "";
 
+  // Parse motor backend
+  it = info.hardware_parameters.find("motor_backend");
+  motor_backend_str_ =
+      (it != info.hardware_parameters.end()) ? it->second : "damiao";
+  std::transform(motor_backend_str_.begin(), motor_backend_str_.end(),
+                 motor_backend_str_.begin(), ::tolower);
+  if (motor_backend_str_ == "damiao") {
+    motor_backend_ = MotorBackend::kDamiao;
+  } else if (motor_backend_str_ == "robstride") {
+    motor_backend_ = MotorBackend::kRobStride;
+  } else {
+    RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                 "Unsupported motor_backend '%s'. Use damiao or robstride.",
+                 motor_backend_str_.c_str());
+    return false;
+  }
+
   // Parse gripper enable (default: true for V10)
   it = info.hardware_parameters.find("hand");
-  if (it == info.hardware_parameters.end()) {
-    hand_ = true;  // Default to true for V10
-  } else {
-    // Handle both "true"/"True" and "false"/"False"
-    std::string value = it->second;
-    std::transform(value.begin(), value.end(), value.begin(), ::tolower);
-    hand_ = (value == "true");
-  }
+  hand_ = (it == info.hardware_parameters.end())
+              ? true
+              : parse_bool(it->second, true);
 
   // Parse CAN-FD enable (default: true for V10)
   it = info.hardware_parameters.find("can_fd");
-  if (it == info.hardware_parameters.end()) {
-    can_fd_ = true;  // Default to true for V10
-  } else {
-    // Handle both "true"/"True" and "false"/"False"
-    std::string value = it->second;
-    std::transform(value.begin(), value.end(), value.begin(), ::tolower);
-    can_fd_ = (value == "true");
-  }
+  can_fd_ = (it == info.hardware_parameters.end())
+                ? true
+                : parse_bool(it->second, true);
 
   // Parse control gains
   for (size_t i = 1; i <= ARM_DOF; ++i) {
@@ -72,10 +142,85 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
     }
   }
 
+  if (motor_backend_ == MotorBackend::kRobStride) {
+    try {
+      it = info.hardware_parameters.find("robstride_master_id");
+      if (it != info.hardware_parameters.end()) {
+        int master = std::stoi(it->second);
+        if (master < 0 || master > 255) {
+          throw std::runtime_error("robstride_master_id out of range");
+        }
+        robstride_master_id_ = static_cast<uint8_t>(master);
+      }
+
+      it = info.hardware_parameters.find("robstride_joint_ids");
+      if (it != info.hardware_parameters.end()) {
+        robstride_joint_ids_ = parse_u8_list(it->second, ARM_DOF);
+      }
+
+      it = info.hardware_parameters.find("robstride_joint_types");
+      if (it != info.hardware_parameters.end()) {
+        robstride_joint_types_ = parse_int_list(it->second, ARM_DOF);
+      }
+
+      for (size_t i = 0; i < robstride_joint_types_.size(); ++i) {
+        if (robstride_joint_types_[i] < 0 || robstride_joint_types_[i] > 6) {
+          throw std::runtime_error("robstride_joint_types contains invalid "
+                                   "actuator type at index " +
+                                   std::to_string(i));
+        }
+      }
+
+      it = info.hardware_parameters.find("robstride_gripper_id");
+      if (it != info.hardware_parameters.end()) {
+        int gripper_id = std::stoi(it->second);
+        if (gripper_id < 0 || gripper_id > 255) {
+          throw std::runtime_error("robstride_gripper_id out of range");
+        }
+        robstride_gripper_id_ = static_cast<uint8_t>(gripper_id);
+      }
+
+      it = info.hardware_parameters.find("robstride_gripper_type");
+      if (it != info.hardware_parameters.end()) {
+        robstride_gripper_type_ = std::stoi(it->second);
+        if (robstride_gripper_type_ < 0 || robstride_gripper_type_ > 6) {
+          throw std::runtime_error("robstride_gripper_type out of range");
+        }
+      }
+    } catch (const std::exception& ex) {
+      RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                   "Failed to parse RobStride configuration: %s", ex.what());
+      return false;
+    }
+  }
+
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "Configuration: CAN=%s, arm_prefix=%s, hand=%s, can_fd=%s",
-              can_interface_.c_str(), arm_prefix_.c_str(),
-              hand_ ? "enabled" : "disabled", can_fd_ ? "enabled" : "disabled");
+              "Configuration: backend=%s, CAN=%s, arm_prefix=%s, hand=%s, "
+              "can_fd=%s",
+              motor_backend_str_.c_str(), can_interface_.c_str(),
+              arm_prefix_.c_str(), hand_ ? "enabled" : "disabled",
+              can_fd_ ? "enabled" : "disabled");
+
+  if (motor_backend_ == MotorBackend::kRobStride) {
+    RCLCPP_INFO(
+        rclcpp::get_logger("OpenArm_v10HW"),
+        "RobStride mapping loaded: master_id=%u, joint_ids=%u,%u,%u,%u,%u,%u,%u, "
+        "joint_types=%d,%d,%d,%d,%d,%d,%d, gripper_id=%u, gripper_type=%d",
+        static_cast<unsigned>(robstride_master_id_),
+        static_cast<unsigned>(robstride_joint_ids_[0]),
+        static_cast<unsigned>(robstride_joint_ids_[1]),
+        static_cast<unsigned>(robstride_joint_ids_[2]),
+        static_cast<unsigned>(robstride_joint_ids_[3]),
+        static_cast<unsigned>(robstride_joint_ids_[4]),
+        static_cast<unsigned>(robstride_joint_ids_[5]),
+        static_cast<unsigned>(robstride_joint_ids_[6]),
+        robstride_joint_types_[0], robstride_joint_types_[1],
+        robstride_joint_types_[2], robstride_joint_types_[3],
+        robstride_joint_types_[4], robstride_joint_types_[5],
+        robstride_joint_types_[6], static_cast<unsigned>(robstride_gripper_id_),
+        robstride_gripper_type_);
+  }
+
   return true;
 }
 
@@ -129,25 +274,6 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
     return CallbackReturn::ERROR;
   }
 
-  // Initialize OpenArm with configurable CAN-FD setting
-  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "Initializing OpenArm on %s with CAN-FD %s...",
-              can_interface_.c_str(), can_fd_ ? "enabled" : "disabled");
-  openarm_ =
-      std::make_unique<openarm::can::socket::OpenArm>(can_interface_, can_fd_);
-
-  // Initialize arm motors with V10 defaults
-  openarm_->init_arm_motors(DEFAULT_MOTOR_TYPES, DEFAULT_SEND_CAN_IDS,
-                            DEFAULT_RECV_CAN_IDS);
-
-  // Initialize gripper if enabled
-  if (hand_) {
-    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Initializing gripper...");
-    openarm_->init_gripper_motor(DEFAULT_GRIPPER_MOTOR_TYPE,
-                                 DEFAULT_GRIPPER_SEND_CAN_ID,
-                                 DEFAULT_GRIPPER_RECV_CAN_ID);
-  }
-
   // Initialize state and command vectors based on generated joint count
   const size_t total_joints = joint_names_.size();
   pos_commands_.resize(total_joints, 0.0);
@@ -157,20 +283,29 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   vel_states_.resize(total_joints, 0.0);
   tau_states_.resize(total_joints, 0.0);
 
+  if (motor_backend_ == MotorBackend::kDamiao) {
+    if (!init_damiao_backend()) {
+      return CallbackReturn::ERROR;
+    }
+  } else {
+    if (!init_robstride_backend()) {
+      return CallbackReturn::ERROR;
+    }
+  }
+
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "OpenArm V10 Simple HW initialized successfully");
+              "OpenArm V10 hardware initialized successfully with backend '%s'",
+              motor_backend_str_.c_str());
 
   return CallbackReturn::SUCCESS;
 }
 
 hardware_interface::CallbackReturn OpenArm_v10HW::on_configure(
     const rclcpp_lifecycle::State& /*previous_state*/) {
-  // Set callback mode to ignore during configuration
-  openarm_->refresh_all();
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  openarm_->recv_all();
-
-  return CallbackReturn::SUCCESS;
+  if (motor_backend_ == MotorBackend::kDamiao) {
+    return configure_damiao_backend();
+  }
+  return configure_robstride_backend();
 }
 
 std::vector<hardware_interface::StateInterface>
@@ -208,40 +343,180 @@ OpenArm_v10HW::export_command_interfaces() {
 
 hardware_interface::CallbackReturn OpenArm_v10HW::on_activate(
     const rclcpp_lifecycle::State& /*previous_state*/) {
-  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Activating OpenArm V10...");
+  if (motor_backend_ == MotorBackend::kDamiao) {
+    return activate_damiao_backend();
+  }
+  return activate_robstride_backend();
+}
+
+hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
+    const rclcpp_lifecycle::State& /*previous_state*/) {
+  if (motor_backend_ == MotorBackend::kDamiao) {
+    return deactivate_damiao_backend();
+  }
+  return deactivate_robstride_backend();
+}
+
+hardware_interface::return_type OpenArm_v10HW::read(
+    const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/) {
+  if (motor_backend_ == MotorBackend::kDamiao) {
+    return read_damiao_backend();
+  }
+  return read_robstride_backend();
+}
+
+hardware_interface::return_type OpenArm_v10HW::write(
+    const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/) {
+  if (motor_backend_ == MotorBackend::kDamiao) {
+    return write_damiao_backend();
+  }
+  return write_robstride_backend();
+}
+
+void OpenArm_v10HW::return_to_zero() {
+  if (motor_backend_ == MotorBackend::kDamiao) {
+    return_to_zero_damiao();
+    return;
+  }
+  return_to_zero_robstride();
+}
+
+bool OpenArm_v10HW::init_damiao_backend() {
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Initializing Damiao OpenArm backend on %s with CAN-FD %s...",
+              can_interface_.c_str(), can_fd_ ? "enabled" : "disabled");
+
+  openarm_ =
+      std::make_unique<openarm::can::socket::OpenArm>(can_interface_, can_fd_);
+
+  openarm_->init_arm_motors(DEFAULT_MOTOR_TYPES, DEFAULT_SEND_CAN_IDS,
+                            DEFAULT_RECV_CAN_IDS);
+
+  if (hand_) {
+    openarm_->init_gripper_motor(DEFAULT_GRIPPER_MOTOR_TYPE,
+                                 DEFAULT_GRIPPER_SEND_CAN_ID,
+                                 DEFAULT_GRIPPER_RECV_CAN_ID);
+  }
+
+  return true;
+}
+
+bool OpenArm_v10HW::init_robstride_backend() {
+  try {
+    robstride_arm_motors_.clear();
+    robstride_arm_motors_.reserve(ARM_DOF);
+
+    for (size_t i = 0; i < ARM_DOF; ++i) {
+      robstride_arm_motors_.emplace_back(std::make_unique<RobStrideMotor>(
+          can_interface_, robstride_master_id_, robstride_joint_ids_[i],
+          robstride_joint_types_[i]));
+    }
+
+    if (hand_) {
+      robstride_gripper_motor_ = std::make_unique<RobStrideMotor>(
+          can_interface_, robstride_master_id_, robstride_gripper_id_,
+          robstride_gripper_type_);
+    }
+
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Initialized RobStride backend on %s for %zu joints",
+                can_interface_.c_str(), robstride_arm_motors_.size());
+    return true;
+  } catch (const std::exception& ex) {
+    RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                 "RobStride backend initialization failed: %s", ex.what());
+    return false;
+  }
+}
+
+hardware_interface::CallbackReturn OpenArm_v10HW::configure_damiao_backend() {
+  openarm_->refresh_all();
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  openarm_->recv_all();
+  return CallbackReturn::SUCCESS;
+}
+
+hardware_interface::CallbackReturn OpenArm_v10HW::configure_robstride_backend() {
+  for (auto& motor : robstride_arm_motors_) {
+    motor->receive_status_frame(0.01);
+  }
+  if (hand_ && robstride_gripper_motor_) {
+    robstride_gripper_motor_->receive_status_frame(0.01);
+  }
+  return CallbackReturn::SUCCESS;
+}
+
+hardware_interface::CallbackReturn OpenArm_v10HW::activate_damiao_backend() {
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Activating OpenArm V10 with Damiao backend...");
   openarm_->set_callback_mode_all(openarm::damiao_motor::CallbackMode::STATE);
   openarm_->enable_all();
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   openarm_->recv_all();
 
-  // Return to zero position
   return_to_zero();
 
-  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "OpenArm V10 activated");
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "OpenArm V10 activated (Damiao backend)");
   return CallbackReturn::SUCCESS;
 }
 
-hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
-    const rclcpp_lifecycle::State& /*previous_state*/) {
+hardware_interface::CallbackReturn OpenArm_v10HW::activate_robstride_backend() {
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "Deactivating OpenArm V10...");
+              "Activating OpenArm V10 with RobStride backend...");
 
-  // Disable all motors (like full_arm.cpp exit)
+  for (auto& motor : robstride_arm_motors_) {
+    motor->Get_RobStrite_Motor_parameter(0x7005);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    motor->enable_motor();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  if (hand_ && robstride_gripper_motor_) {
+    robstride_gripper_motor_->Get_RobStrite_Motor_parameter(0x7005);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    robstride_gripper_motor_->enable_motor();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  return_to_zero();
+
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "OpenArm V10 activated (RobStride backend)");
+  return CallbackReturn::SUCCESS;
+}
+
+hardware_interface::CallbackReturn OpenArm_v10HW::deactivate_damiao_backend() {
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Deactivating OpenArm V10 (Damiao backend)...");
+
   openarm_->disable_all();
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   openarm_->recv_all();
 
-  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "OpenArm V10 deactivated");
   return CallbackReturn::SUCCESS;
 }
 
-hardware_interface::return_type OpenArm_v10HW::read(
-    const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/) {
-  // Receive all motor states
+hardware_interface::CallbackReturn OpenArm_v10HW::deactivate_robstride_backend() {
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Deactivating OpenArm V10 (RobStride backend)...");
+
+  for (auto& motor : robstride_arm_motors_) {
+    motor->Disenable_Motor(0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  if (hand_ && robstride_gripper_motor_) {
+    robstride_gripper_motor_->Disenable_Motor(0);
+  }
+
+  return CallbackReturn::SUCCESS;
+}
+
+hardware_interface::return_type OpenArm_v10HW::read_damiao_backend() {
   openarm_->refresh_all();
   openarm_->recv_all();
 
-  // Read arm joint states
   const auto& arm_motors = openarm_->get_arm().get_motors();
   for (size_t i = 0; i < ARM_DOF && i < arm_motors.size(); ++i) {
     pos_states_[i] = arm_motors[i].get_position();
@@ -249,62 +524,109 @@ hardware_interface::return_type OpenArm_v10HW::read(
     tau_states_[i] = arm_motors[i].get_torque();
   }
 
-  // Read gripper state if enabled
   if (hand_ && joint_names_.size() > ARM_DOF) {
     const auto& gripper_motors = openarm_->get_gripper().get_motors();
     if (!gripper_motors.empty()) {
-      // TODO the mappings are approximates
-      // Convert motor position (radians) to joint value (0-0.044m)
       double motor_pos = gripper_motors[0].get_position();
       pos_states_[ARM_DOF] = motor_radians_to_joint(motor_pos);
-
-      // Unimplemented: Velocity and torque mapping
-      vel_states_[ARM_DOF] = 0;  // gripper_motors[0].get_velocity();
-      tau_states_[ARM_DOF] = 0;  // gripper_motors[0].get_torque();
+      vel_states_[ARM_DOF] = 0;
+      tau_states_[ARM_DOF] = 0;
     }
   }
 
   return hardware_interface::return_type::OK;
 }
 
-hardware_interface::return_type OpenArm_v10HW::write(
-    const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/) {
-  // Control arm motors with MIT control
+hardware_interface::return_type OpenArm_v10HW::read_robstride_backend() {
+  for (size_t i = 0; i < ARM_DOF && i < robstride_arm_motors_.size(); ++i) {
+    robstride_arm_motors_[i]->receive_status_frame(0.002);
+    pos_states_[i] = robstride_arm_motors_[i]->position_;
+    vel_states_[i] = robstride_arm_motors_[i]->velocity_;
+    tau_states_[i] = robstride_arm_motors_[i]->torque_;
+  }
+
+  if (hand_ && robstride_gripper_motor_ && joint_names_.size() > ARM_DOF) {
+    robstride_gripper_motor_->receive_status_frame(0.002);
+    pos_states_[ARM_DOF] =
+        motor_radians_to_joint(robstride_gripper_motor_->position_);
+    vel_states_[ARM_DOF] = robstride_gripper_motor_->velocity_;
+    tau_states_[ARM_DOF] = robstride_gripper_motor_->torque_;
+  }
+
+  return hardware_interface::return_type::OK;
+}
+
+hardware_interface::return_type OpenArm_v10HW::write_damiao_backend() {
   std::vector<openarm::damiao_motor::MITParam> arm_params;
   for (size_t i = 0; i < ARM_DOF; ++i) {
     arm_params.push_back(
         {kp_[i], kd_[i], pos_commands_[i], vel_commands_[i], tau_commands_[i]});
   }
   openarm_->get_arm().mit_control_all(arm_params);
-  // Control gripper if enabled
+
   if (hand_ && joint_names_.size() > ARM_DOF) {
-    // TODO the true mappings are unimplemented.
     double motor_command = joint_to_motor_radians(pos_commands_[ARM_DOF]);
     openarm_->get_gripper().mit_control_all(
         {{GRIPPER_KP, GRIPPER_KD, motor_command, 0, 0}});
   }
+
   openarm_->recv_all(1000);
   return hardware_interface::return_type::OK;
 }
 
-void OpenArm_v10HW::return_to_zero() {
-  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "Returning to zero position...");
+hardware_interface::return_type OpenArm_v10HW::write_robstride_backend() {
+  for (size_t i = 0; i < ARM_DOF && i < robstride_arm_motors_.size(); ++i) {
+    robstride_arm_motors_[i]->send_motion_command(
+        static_cast<float>(tau_commands_[i]),
+        static_cast<float>(pos_commands_[i]),
+        static_cast<float>(vel_commands_[i]), static_cast<float>(kp_[i]),
+        static_cast<float>(kd_[i]));
+  }
 
-  // Return arm to zero with MIT control
+  if (hand_ && robstride_gripper_motor_ && joint_names_.size() > ARM_DOF) {
+    const float gripper_motor_command =
+        static_cast<float>(joint_to_motor_radians(pos_commands_[ARM_DOF]));
+    robstride_gripper_motor_->send_motion_command(
+        0.0f, gripper_motor_command, 0.0f, static_cast<float>(GRIPPER_KP),
+        static_cast<float>(GRIPPER_KD));
+  }
+
+  return hardware_interface::return_type::OK;
+}
+
+void OpenArm_v10HW::return_to_zero_damiao() {
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Returning to zero position (Damiao backend)...");
+
   std::vector<openarm::damiao_motor::MITParam> arm_params;
   for (size_t i = 0; i < ARM_DOF; ++i) {
     arm_params.push_back({kp_[i], kd_[i], 0.0, 0.0, 0.0});
   }
   openarm_->get_arm().mit_control_all(arm_params);
 
-  // Return gripper to zero if enabled
   if (hand_) {
     openarm_->get_gripper().mit_control_all(
         {{GRIPPER_KP, GRIPPER_KD, GRIPPER_JOINT_0_POSITION, 0.0, 0.0}});
   }
   std::this_thread::sleep_for(std::chrono::microseconds(1000));
   openarm_->recv_all();
+}
+
+void OpenArm_v10HW::return_to_zero_robstride() {
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Returning to zero position (RobStride backend)...");
+
+  for (size_t i = 0; i < ARM_DOF && i < robstride_arm_motors_.size(); ++i) {
+    robstride_arm_motors_[i]->send_motion_command(
+        0.0f, 0.0f, 0.0f, static_cast<float>(kp_[i]), static_cast<float>(kd_[i]));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  if (hand_ && robstride_gripper_motor_) {
+    robstride_gripper_motor_->send_motion_command(
+        0.0f, static_cast<float>(joint_to_motor_radians(0.0)), 0.0f,
+        static_cast<float>(GRIPPER_KP), static_cast<float>(GRIPPER_KD));
+  }
 }
 
 // Gripper mapping helper functions

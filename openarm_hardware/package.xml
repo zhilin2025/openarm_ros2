@@ -28,6 +28,7 @@
   <depend>hardware_interface</depend>
   <depend>openarm_can</depend>
   <depend>pluginlib</depend>
+  <depend>rs_motor_ros2</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

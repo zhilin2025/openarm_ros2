@@ -25,6 +25,7 @@ find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
+find_package(rs_motor_ros2 REQUIRED)
 
 # Find openarm_can library
 find_package(OpenArmCAN REQUIRED)
@@ -43,11 +44,26 @@ target_link_libraries(${PROJECT_NAME}
   OpenArmCAN::openarm_can
 )
 
+if(TARGET rs_motor_ros2::rs_motor_ros2_lib)
+  target_link_libraries(${PROJECT_NAME}
+    rs_motor_ros2::rs_motor_ros2_lib
+  )
+elseif(TARGET rs_motor_ros2_lib)
+  target_link_libraries(${PROJECT_NAME}
+    rs_motor_ros2_lib
+  )
+else()
+  target_link_libraries(${PROJECT_NAME}
+    rs_motor_ros2
+  )
+endif()
+
 ament_target_dependencies(${PROJECT_NAME}
   hardware_interface
   pluginlib
   rclcpp
   rclcpp_lifecycle
+  rs_motor_ros2
 )
 
 pluginlib_export_plugin_description_file(hardware_interface openarm_hardware.xml)
@@ -73,6 +89,7 @@ ament_export_dependencies(
   openarm_can
   pluginlib
   rclcpp
+  rs_motor_ros2
 )
 
 ament_package()

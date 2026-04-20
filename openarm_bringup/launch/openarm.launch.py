@@ -30,7 +30,10 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_robot_description(context: LaunchContext, description_package, description_file,
-                               arm_type, use_fake_hardware, can_interface, arm_prefix):
+                               arm_type, use_fake_hardware, can_interface, arm_prefix,
+                               motor_backend, robstride_master_id, robstride_joint_ids,
+                               robstride_joint_types, robstride_gripper_id,
+                               robstride_gripper_type):
     """Generate robot description using xacro processing."""
     """返回值是一个包含 robot_description（URDF/XML）的字符串，用于作为参数传给 robot_state_publisher 和 ros2_control_node，供后续启动节点读取机器人模型与 ros2_control 配置。"""
 
@@ -41,6 +44,12 @@ def generate_robot_description(context: LaunchContext, description_package, desc
     use_fake_hardware_str = context.perform_substitution(use_fake_hardware)
     can_interface_str = context.perform_substitution(can_interface)
     arm_prefix_str = context.perform_substitution(arm_prefix)
+    motor_backend_str = context.perform_substitution(motor_backend)
+    robstride_master_id_str = context.perform_substitution(robstride_master_id)
+    robstride_joint_ids_str = context.perform_substitution(robstride_joint_ids)
+    robstride_joint_types_str = context.perform_substitution(robstride_joint_types)
+    robstride_gripper_id_str = context.perform_substitution(robstride_gripper_id)
+    robstride_gripper_type_str = context.perform_substitution(robstride_gripper_type)
 
     # Build xacro file path
     xacro_path = os.path.join(
@@ -58,6 +67,12 @@ def generate_robot_description(context: LaunchContext, description_package, desc
             "ros2_control": "true",
             "can_interface": can_interface_str,
             "arm_prefix": arm_prefix_str,
+            "motor_backend": motor_backend_str,
+            "robstride_master_id": robstride_master_id_str,
+            "robstride_joint_ids": robstride_joint_ids_str,
+            "robstride_joint_types": robstride_joint_types_str,
+            "robstride_gripper_id": robstride_gripper_id_str,
+            "robstride_gripper_type": robstride_gripper_type_str,
         }
     ).toprettyxml(indent="  ")
 
@@ -65,12 +80,18 @@ def generate_robot_description(context: LaunchContext, description_package, desc
 
 
 def robot_nodes_spawner(context: LaunchContext, description_package, description_file,
-                        arm_type, use_fake_hardware, controllers_file, can_interface, arm_prefix):
+                        arm_type, use_fake_hardware, controllers_file, can_interface,
+                        arm_prefix, motor_backend, robstride_master_id,
+                        robstride_joint_ids, robstride_joint_types,
+                        robstride_gripper_id, robstride_gripper_type):
     """Spawn both robot state publisher and control nodes with shared robot description."""
 
     # Generate robot description once
     robot_description = generate_robot_description(
-        context, description_package, description_file, arm_type, use_fake_hardware, can_interface, arm_prefix
+        context, description_package, description_file, arm_type,
+        use_fake_hardware, can_interface, arm_prefix,
+        motor_backend, robstride_master_id, robstride_joint_ids,
+        robstride_joint_types, robstride_gripper_id, robstride_gripper_type
     )
 
     # Get controllers file path
@@ -152,6 +173,37 @@ def generate_launch_description():
             default_value="openarm_v10_controllers.yaml",
             description="Controllers file(s) to use. Can be a single file or comma-separated list of files.",
         ),
+        DeclareLaunchArgument(
+            "motor_backend",
+            default_value="damiao",
+            choices=["damiao", "robstride"],
+            description="Motor backend type used by openarm_hardware.",
+        ),
+        DeclareLaunchArgument(
+            "robstride_master_id",
+            default_value="253",
+            description="RobStride master CAN id in decimal.",
+        ),
+        DeclareLaunchArgument(
+            "robstride_joint_ids",
+            default_value="1,2,3,4,5,6,7",
+            description="Comma-separated RobStride joint motor ids.",
+        ),
+        DeclareLaunchArgument(
+            "robstride_joint_types",
+            default_value="6,6,3,0,0,0,0",
+            description="Comma-separated RobStride actuator types for 7 joints.",
+        ),
+        DeclareLaunchArgument(
+            "robstride_gripper_id",
+            default_value="8",
+            description="RobStride gripper motor id.",
+        ),
+        DeclareLaunchArgument(
+            "robstride_gripper_type",
+            default_value="0",
+            description="RobStride gripper actuator type.",
+        ),
     ]
 
     # Initialize launch configurations
@@ -164,6 +216,12 @@ def generate_launch_description():
     controllers_file = LaunchConfiguration("controllers_file")
     can_interface = LaunchConfiguration("can_interface")
     arm_prefix = LaunchConfiguration("arm_prefix")
+    motor_backend = LaunchConfiguration("motor_backend")
+    robstride_master_id = LaunchConfiguration("robstride_master_id")
+    robstride_joint_ids = LaunchConfiguration("robstride_joint_ids")
+    robstride_joint_types = LaunchConfiguration("robstride_joint_types")
+    robstride_gripper_id = LaunchConfiguration("robstride_gripper_id")
+    robstride_gripper_type = LaunchConfiguration("robstride_gripper_type")
     # Configuration file paths
     controllers_file = PathJoinSubstitution(
         [FindPackageShare(runtime_config_package), "config",
@@ -174,7 +232,10 @@ def generate_launch_description():
     robot_nodes_spawner_func = OpaqueFunction(
         function=robot_nodes_spawner,
         args=[description_package, description_file, arm_type,
-              use_fake_hardware, controllers_file, can_interface, arm_prefix]
+              use_fake_hardware, controllers_file, can_interface, arm_prefix,
+              motor_backend, robstride_master_id, robstride_joint_ids,
+              robstride_joint_types, robstride_gripper_id,
+              robstride_gripper_type]
     )
     # RViz configuration
     rviz_config_file = PathJoinSubstitution(
