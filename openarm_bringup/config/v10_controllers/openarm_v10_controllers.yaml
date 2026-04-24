@@ -12,10 +12,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# 要加载哪些控制器；
+# 每个控制器管哪些关节；
+# 每个控制器用哪些硬件接口（位置 / 速度 / 力矩）；
+# 控制器的运行参数（如更新频率、轨迹约束）。
 
 controller_manager:
   ros__parameters:
-    update_rate: 100  # Hz
+    update_rate: 100  # Hz（控制器管理器的更新频率，即 read/write 的调用频率）
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
@@ -32,6 +36,7 @@ controller_manager:
     gripper_controller:
       type: position_controllers/GripperActionController
 
+# 简单的位置控制器，作用是 “把上层发来的位置命令直接转发给硬件”，不做任何轨迹规划或平滑处理
 forward_position_controller:
   ros__parameters:
     joints:
@@ -65,6 +70,7 @@ forward_velocity_controller:
     state_interfaces:
       - velocity
 
+# 实际应用中最常用的控制器，作用是 “接收上层发来的关节轨迹（一系列时间 - 位置点），自动平滑跟踪，保证运动平稳”
 joint_trajectory_controller:
   ros__parameters:
     joints:
@@ -81,8 +87,8 @@ joint_trajectory_controller:
     state_interfaces:
       - position
 
-    state_publish_rate: 50.0 # Defaults to 50
-    action_monitor_rate: 50.0 # Defaults to 20
+    state_publish_rate: 50.0 # Defaults to 50， 控制器发布 /joint_states 话题的频率
+    action_monitor_rate: 50.0 # Defaults to 20， 监控 /follow_joint_trajectory 动作目标的频率（比如检查是否到达目标位置、是否超时）
 
     allow_partial_joints_goal: false # Defaults to false
     constraints:

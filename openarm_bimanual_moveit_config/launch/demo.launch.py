@@ -202,7 +202,7 @@ def generate_launch_description():
             "robstride_joint_ids", default_value="1,2,3,4,5,6,7"
         ),
         DeclareLaunchArgument(
-            "robstride_joint_types", default_value="6,6,3,0,0,0,0"
+            "robstride_joint_types", default_value="3,3,6,6,0,0,0"
         ),
         DeclareLaunchArgument("robstride_gripper_id", default_value="8"),
         DeclareLaunchArgument("robstride_gripper_type", default_value="0"),

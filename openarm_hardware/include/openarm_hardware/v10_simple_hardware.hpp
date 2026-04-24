@@ -43,37 +43,37 @@ namespace openarm_hardware {
 class OpenArm_v10HW : public hardware_interface::SystemInterface {
  public:
   OpenArm_v10HW();
+  // 以下几个接口属于SystemInterface要求的标准生命周期接口，分别对应硬件的初始化、配置、激活、停用、读取、写入等
+  TEMPLATES__ROS2_CONTROL__VISIBILITY_PUBLIC      // 是ROS2用于控制符号可见性的宏（对应 __attribute__((visibility("default")))），确保这些方法能被插件系统（pluginlib）识别和调用
+  hardware_interface::CallbackReturn on_init(     // 初始化电机
+      const hardware_interface::HardwareInfo& info) override;   // override显式声明重载基类的虚函数，避免隐式重载错误，提升代码可读性
 
   TEMPLATES__ROS2_CONTROL__VISIBILITY_PUBLIC
-  hardware_interface::CallbackReturn on_init(
-      const hardware_interface::HardwareInfo& info) override;
-
-  TEMPLATES__ROS2_CONTROL__VISIBILITY_PUBLIC
-  hardware_interface::CallbackReturn on_configure(
+  hardware_interface::CallbackReturn on_configure(  // 刷新电机状态，获取电机状态
       const rclcpp_lifecycle::State& previous_state) override;
 
   TEMPLATES__ROS2_CONTROL__VISIBILITY_PUBLIC
-  std::vector<hardware_interface::StateInterface> export_state_interfaces()
+  std::vector<hardware_interface::StateInterface> export_state_interfaces()  // 导出状态接口：向 ROS 2 Control 注册硬件的可读取状态，让框架知道从哪里获取每个关节的状态数据
       override;
 
   TEMPLATES__ROS2_CONTROL__VISIBILITY_PUBLIC
-  std::vector<hardware_interface::CommandInterface> export_command_interfaces()
+  std::vector<hardware_interface::CommandInterface> export_command_interfaces()  //导出指令接口：向 ROS 2 Control 注册硬件的可写入指令（如关节位置、速度、力矩指令），让框架能下发控制指令。
       override;
 
   TEMPLATES__ROS2_CONTROL__VISIBILITY_PUBLIC
-  hardware_interface::CallbackReturn on_activate(
+  hardware_interface::CallbackReturn on_activate(   //硬件激活：将硬件从「配置态」切换到「激活态」（如使能电机、归位到零位）
       const rclcpp_lifecycle::State& previous_state) override;
 
   TEMPLATES__ROS2_CONTROL__VISIBILITY_PUBLIC
-  hardware_interface::CallbackReturn on_deactivate(
+  hardware_interface::CallbackReturn on_deactivate(  // 硬件去激活：将硬件从「激活态」切回「非激活态」（如禁用电机、停止 CAN 通信），用于安全停机。
       const rclcpp_lifecycle::State& previous_state) override;
 
   TEMPLATES__ROS2_CONTROL__VISIBILITY_PUBLIC
-  hardware_interface::return_type read(const rclcpp::Time& time,
+  hardware_interface::return_type read(const rclcpp::Time& time,  // 读取电机状态：周期性从 CAN 总线读取电机状态，写入 pos_states_/vel_states_/tau_states_
                                        const rclcpp::Duration& period) override;
 
   TEMPLATES__ROS2_CONTROL__VISIBILITY_PUBLIC
-  hardware_interface::return_type write(
+  hardware_interface::return_type write(    // 写入控制指令：周期性将 ROS 2 Control 下发的指令（位置 / 速度 / 力矩）通过 CAN 总线发送给电机执行。
       const rclcpp::Time& time, const rclcpp::Duration& period) override;
 
  private:
@@ -107,15 +107,15 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   const uint32_t DEFAULT_GRIPPER_RECV_CAN_ID = 0x18;
 
     // Default RobStride motor configuration for V10:
-    // RS06 + RS06 + RS03 + RS00 + RS00 + RS00 + RS00 + RS00(gripper)
+    // RS03 + RS03 + RS06 + RS06 + RS00 + RS00 + RS00 + RS00(gripper)
     std::vector<uint8_t> robstride_joint_ids_ = {0x01, 0x02, 0x03, 0x04,
-                                                                                             0x05, 0x06, 0x07};
-    std::vector<int> robstride_joint_types_ = {6, 6, 3, 0, 0, 0, 0};
+                                                 0x05, 0x06, 0x07};
+    std::vector<int> robstride_joint_types_ = {3, 3, 6, 6, 0, 0, 0};
     uint8_t robstride_master_id_ = 0xFD;
     uint8_t robstride_gripper_id_ = 0x08;
     int robstride_gripper_type_ = 0;
 
-  // Gains
+  // Gains kp_ 决定「关节有多快能到达目标位置」，kd_ 决定「关节到达目标位置时有多稳」
   std::vector<double> kp_ = {70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0};
   std::vector<double> kd_ = {2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5};
 

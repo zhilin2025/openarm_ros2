@@ -29,6 +29,7 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
+## 将 Xacro 文件转换为 URDF 字符串，是连接 “Xacro 配置” 和 “ROS 2 节点” 的桥梁
 def generate_robot_description(context: LaunchContext, description_package, description_file,
                                arm_type, use_fake_hardware, can_interface, arm_prefix,
                                motor_backend, robstride_master_id, robstride_joint_ids,
@@ -191,7 +192,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "robstride_joint_types",
-            default_value="6,6,3,0,0,0,0",
+            default_value="3,3,6,6,0,0,0",
             description="Comma-separated RobStride actuator types for 7 joints.",
         ),
         DeclareLaunchArgument(

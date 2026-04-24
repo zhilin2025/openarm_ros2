@@ -31,6 +31,10 @@ namespace openarm_hardware {
 
 OpenArm_v10HW::OpenArm_v10HW() = default;
 
+//两个工具函数，核心作用是将以逗号分隔的字符串解析为指定长度的数值列表并返回（分别对应 uint8_t 类型和 int 类型）
+//是 ROS 2 Control 硬件接口中解析配置文件参数的关键逻辑，用于处理 robstride_joint_ids、robstride_joint_types 等列表型配置参数。
+
+// 解析 robstride_joint_ids（关节 ID，必须是 0~255 的无符号字节）
 std::vector<uint8_t> OpenArm_v10HW::parse_u8_list(const std::string& value,
                                                   size_t expected_size) const {
   std::vector<uint8_t> out;
@@ -58,6 +62,7 @@ std::vector<uint8_t> OpenArm_v10HW::parse_u8_list(const std::string& value,
   return out;
 }
 
+// 解析 robstride_joint_types（关节类型，如 6/3/0 等整数标识）
 std::vector<int> OpenArm_v10HW::parse_int_list(const std::string& value,
                                                size_t expected_size) const {
   std::vector<int> out;
@@ -81,6 +86,7 @@ std::vector<int> OpenArm_v10HW::parse_int_list(const std::string& value,
   return out;
 }
 
+// 这个函数解析的“源”是 ros2_control 在 URDF 里定义的 hardware 参数表，不是直接读某个 YAML 或 launch 参数
 bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
   auto parse_bool = [](const std::string& value, bool default_value) {
     if (value.empty()) {
@@ -308,11 +314,18 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_configure(
   return configure_robstride_backend();
 }
 
-std::vector<hardware_interface::StateInterface>
+
+/*
+与 ROS 2 Control 框架的交互流程
+框架启动时调用 export_state_interfaces()，获取所有状态接口的「名称 - 类型 - 地址」映射；
+框架周期性调用 read() 方法，硬件接口从 CAN 总线读取电机状态，写入 pos_states_/vel_states_/tau_states_；
+框架通过 export_state_interfaces() 注册的内存地址，直接读取这些向量的值，供控制器（如 MoveIt 2、关节轨迹控制器）使用。
+*/
+std::vector<hardware_interface::StateInterface>   // StateInterface 是 ROS 2 Control 定义的「状态接口」类，用于描述「硬件状态数据的名称 + 数据类型 + 内存地址」
 OpenArm_v10HW::export_state_interfaces() {
   std::vector<hardware_interface::StateInterface> state_interfaces;
-  for (size_t i = 0; i < joint_names_.size(); ++i) {
-    state_interfaces.emplace_back(hardware_interface::StateInterface(
+  for (size_t i = 0; i < joint_names_.size(); ++i) {    // 循环遍历每个关节，为每个关节生成「位置、速度、力矩」三种状态接口，并将它们注册到ROS2 Control框架中。这样，控制器就可以通过这些接口获取每个关节的当前状态数据。
+    state_interfaces.emplace_back(hardware_interface::StateInterface(   // emplace_back：直接在向量中构造 StateInterface 对象（效率高于 push_back）
         joint_names_[i], hardware_interface::HW_IF_POSITION, &pos_states_[i]));
     state_interfaces.emplace_back(hardware_interface::StateInterface(
         joint_names_[i], hardware_interface::HW_IF_VELOCITY, &vel_states_[i]));
@@ -645,6 +658,9 @@ double OpenArm_v10HW::motor_radians_to_joint(double motor_radians) {
 
 }  // namespace openarm_hardware
 
+// 核心注册逻辑，用于将自定义的 OpenArm_v10HW 硬件接口类注册为 ROS2 Control 框架可识别的插件，使得框架能通过插件机制动态加载并实例化该硬件接口
+// PLUGINLIB_EXPORT_CLASS第一个参数是自定义子类，第二个是基类
+// 借助 pluginlib 实现插件化扩展
 #include "pluginlib/class_list_macros.hpp"
 
 PLUGINLIB_EXPORT_CLASS(openarm_hardware::OpenArm_v10HW,

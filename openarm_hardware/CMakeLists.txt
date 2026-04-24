@@ -44,6 +44,7 @@ target_link_libraries(${PROJECT_NAME}
   OpenArmCAN::openarm_can
 )
 
+# 链接本地库包 rs_motor_ros2_lib
 if(TARGET rs_motor_ros2::rs_motor_ros2_lib)
   target_link_libraries(${PROJECT_NAME}
     rs_motor_ros2::rs_motor_ros2_lib

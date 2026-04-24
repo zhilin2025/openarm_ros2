@@ -231,7 +231,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "robstride_joint_types",
-            default_value="6,6,3,0,0,0,0",
+            default_value="3,3,6,6,0,0,0",
             description="Comma-separated RobStride actuator types for 7 joints.",
         ),
         DeclareLaunchArgument(
