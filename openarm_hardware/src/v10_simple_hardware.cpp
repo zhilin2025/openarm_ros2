@@ -393,6 +393,29 @@ hardware_interface::return_type OpenArm_v10HW::read(
 
 hardware_interface::return_type OpenArm_v10HW::write(
     const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/) {
+
+  // ---- 硬件级绝对防撞兜底: 限制所有下发的电机位置 ----
+  // 限制所有关节位置在安全范围内, 硬件和rviz中的可视化表现一致
+  constexpr double kArmLimits[7][2] = {
+      {-1.396263, 3.490659},  // joint1
+      {-1.745329, 1.745329},  // joint2
+      {-1.570796, 1.570796},  // joint3
+      {0.0, 2.443461},        // joint4
+      {-1.570796, 1.570796},  // joint5
+      {-0.785398, 0.785398},  // joint6
+      {-1.570796, 1.570796}   // joint7
+  };
+
+  for (size_t i = 0; i < ARM_DOF && i < pos_commands_.size(); ++i) {
+    pos_commands_[i] = std::clamp(pos_commands_[i], kArmLimits[i][0], kArmLimits[i][1]);
+  }
+  
+  if (hand_ && pos_commands_.size() > ARM_DOF) {
+    // 夹爪直线行程安全限位
+    pos_commands_[ARM_DOF] = std::clamp(pos_commands_[ARM_DOF], 0.0, 0.044);
+  }
+  // -----------------------------------------------------------
+
   if (motor_backend_ == MotorBackend::kDamiao) {
     return write_damiao_backend();
   }
