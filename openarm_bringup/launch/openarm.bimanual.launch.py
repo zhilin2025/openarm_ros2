@@ -41,7 +41,8 @@ def generate_robot_description(context: LaunchContext, description_package, desc
                                left_can_interface, motor_backend,
                                robstride_master_id, robstride_joint_ids,
                                robstride_joint_types, robstride_gripper_id,
-                               robstride_gripper_type):
+                               robstride_gripper_type,
+                               auto_return_to_zero_on_activate):
     """Generate robot description using xacro processing."""
 
     description_package_str = context.perform_substitution(description_package)
@@ -56,6 +57,8 @@ def generate_robot_description(context: LaunchContext, description_package, desc
     robstride_joint_types_str = context.perform_substitution(robstride_joint_types)
     robstride_gripper_id_str = context.perform_substitution(robstride_gripper_id)
     robstride_gripper_type_str = context.perform_substitution(robstride_gripper_type)
+    auto_return_to_zero_on_activate_str = context.perform_substitution(
+        auto_return_to_zero_on_activate)
 
     xacro_path = os.path.join(
         get_package_share_directory(description_package_str),
@@ -78,6 +81,7 @@ def generate_robot_description(context: LaunchContext, description_package, desc
             "robstride_joint_types": robstride_joint_types_str,
             "robstride_gripper_id": robstride_gripper_id_str,
             "robstride_gripper_type": robstride_gripper_type_str,
+            "auto_return_to_zero_on_activate": auto_return_to_zero_on_activate_str,
         }
     ).toprettyxml(indent="  ")
 
@@ -89,7 +93,8 @@ def robot_nodes_spawner(context: LaunchContext, description_package, description
                         right_can_interface, left_can_interface, arm_prefix,
                         motor_backend, robstride_master_id,
                         robstride_joint_ids, robstride_joint_types,
-                        robstride_gripper_id, robstride_gripper_type):
+                        robstride_gripper_id, robstride_gripper_type,
+                        auto_return_to_zero_on_activate):
     """Spawn both robot state publisher and control nodes with shared robot description."""
     namespace = namespace_from_context(context, arm_prefix)
 
@@ -98,6 +103,7 @@ def robot_nodes_spawner(context: LaunchContext, description_package, description
         use_fake_hardware, right_can_interface, left_can_interface,
         motor_backend, robstride_master_id, robstride_joint_ids,
         robstride_joint_types, robstride_gripper_id, robstride_gripper_type,
+        auto_return_to_zero_on_activate,
     )
 
     controllers_file_str = context.perform_substitution(controllers_file)
@@ -244,6 +250,12 @@ def generate_launch_description():
             default_value="0",
             description="RobStride gripper actuator type.",
         ),
+        DeclareLaunchArgument(
+            "auto_return_to_zero_on_activate",
+            default_value="false",
+            choices=["true", "false"],
+            description="Whether to auto-command return-to-zero during hardware activation.",
+        ),
     ]
 
     # Initialize launch configurations
@@ -263,6 +275,8 @@ def generate_launch_description():
     robstride_joint_types = LaunchConfiguration("robstride_joint_types")
     robstride_gripper_id = LaunchConfiguration("robstride_gripper_id")
     robstride_gripper_type = LaunchConfiguration("robstride_gripper_type")
+    auto_return_to_zero_on_activate = LaunchConfiguration(
+        "auto_return_to_zero_on_activate")
 
     controllers_file = PathJoinSubstitution(
         [FindPackageShare(runtime_config_package), "config",
@@ -276,7 +290,7 @@ def generate_launch_description():
               left_can_interface, arm_prefix, motor_backend,
               robstride_master_id, robstride_joint_ids,
               robstride_joint_types, robstride_gripper_id,
-              robstride_gripper_type]
+              robstride_gripper_type, auto_return_to_zero_on_activate]
     )
 
     rviz_config_file = PathJoinSubstitution(

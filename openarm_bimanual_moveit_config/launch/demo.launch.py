@@ -47,6 +47,7 @@ def generate_robot_description(
     robstride_joint_types,
     robstride_gripper_id,
     robstride_gripper_type,
+    auto_return_to_zero_on_activate,
 ):
     """Render Xacro and return XML string."""
     description_package_str = context.perform_substitution(description_package)
@@ -62,6 +63,8 @@ def generate_robot_description(
     robstride_joint_types_str = context.perform_substitution(robstride_joint_types)
     robstride_gripper_id_str = context.perform_substitution(robstride_gripper_id)
     robstride_gripper_type_str = context.perform_substitution(robstride_gripper_type)
+    auto_return_to_zero_on_activate_str = context.perform_substitution(
+        auto_return_to_zero_on_activate)
 
     xacro_path = os.path.join(
         get_package_share_directory(description_package_str),
@@ -85,6 +88,7 @@ def generate_robot_description(
             "robstride_joint_types": robstride_joint_types_str,
             "robstride_gripper_id": robstride_gripper_id_str,
             "robstride_gripper_type": robstride_gripper_type_str,
+            "auto_return_to_zero_on_activate": auto_return_to_zero_on_activate_str,
             # arm_prefix unused inside xacro but kept for completeness
         },
     ).toprettyxml(indent="  ")
@@ -108,6 +112,7 @@ def robot_nodes_spawner(
     robstride_joint_types,
     robstride_gripper_id,
     robstride_gripper_type,
+    auto_return_to_zero_on_activate,
 ):
     robot_description = generate_robot_description(
         context,
@@ -124,6 +129,7 @@ def robot_nodes_spawner(
         robstride_joint_types,
         robstride_gripper_id,
         robstride_gripper_type,
+        auto_return_to_zero_on_activate,
     )
 
     controllers_file_str = context.perform_substitution(controllers_file)
@@ -207,6 +213,11 @@ def generate_launch_description():
         DeclareLaunchArgument("robstride_gripper_id", default_value="8"),
         DeclareLaunchArgument("robstride_gripper_type", default_value="0"),
         DeclareLaunchArgument(
+            "auto_return_to_zero_on_activate",
+            default_value="false",
+            choices=["true", "false"],
+        ),
+        DeclareLaunchArgument(
             "controllers_file",
             default_value="openarm_v10_bimanual_controllers.yaml",
         ),
@@ -228,6 +239,8 @@ def generate_launch_description():
     robstride_joint_types = LaunchConfiguration("robstride_joint_types")
     robstride_gripper_id = LaunchConfiguration("robstride_gripper_id")
     robstride_gripper_type = LaunchConfiguration("robstride_gripper_type")
+    auto_return_to_zero_on_activate = LaunchConfiguration(
+        "auto_return_to_zero_on_activate")
 
     controllers_file = PathJoinSubstitution(
         [FindPackageShare(runtime_config_package), "config",
@@ -251,6 +264,7 @@ def generate_launch_description():
             robstride_joint_types,
             robstride_gripper_id,
             robstride_gripper_type,
+            auto_return_to_zero_on_activate,
         ],
     )
 

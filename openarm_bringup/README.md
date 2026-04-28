@@ -51,3 +51,15 @@ ros2 launch openarm_bringup openarm.launch.py
 ```bash
 ros2 action send_goal /joint_trajectory_controller/follow_joint_trajectory control_msgs/action/FollowJointTrajectory '{trajectory: {joint_names: ["openarm_joint1", "openarm_joint2", "openarm_joint3", "openarm_joint4", "openarm_joint5", "openarm_joint6", "openarm_joint7"], points: [{positions: [0.15, 0.15, 0.15, 0.15, 0.15, 0.15, 0.15], time_from_start: {sec: 3, nanosec: 0}}]}}'
 ```
+```bash
+ros2 action send_goal /joint_trajectory_controller/follow_joint_trajectory control_msgs/action/FollowJointTrajectory '{trajectory: {joint_names: ["openarm_joint1", "openarm_joint2", "openarm_joint3", "openarm_joint4", "openarm_joint5", "openarm_joint6", "openarm_joint7"], points: [{positions: [0.15, 0.15, 0.15, 0.55, 0.15, 0.55, 0.15], time_from_start: {sec: 3, nanosec: 0}}]}}'
+```
+控制夹爪到指定位置(用的是gripper_controller控制器，不会做路径插补，直接运动到指定位置，速度较快)
+```bash
+ros2 action send_goal /gripper_controller/gripper_cmd control_msgs/action/GripperCommand "{command: {position: 0.04, max_effort: 1.0}}"
+```
+
+多功能调试：(先不要开启自动回零，执行前需要先手动回零，然后再执行下面发布控制指令)
+```bash
+ros2 launch openarm_bringup openarm.launch.py use_fake_hardware:=false motor_backend:=robstride can_interface:=can0 robstride_master_id:=253 robstride_joint_ids:=1,2,3,4,5,6,7 robstride_joint_types:=3,3,6,6,0,0,0 robstride_gripper_id:=8 robstride_gripper_type:=0 auto_return_to_zero_on_activate:=false
+```

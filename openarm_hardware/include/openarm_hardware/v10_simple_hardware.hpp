@@ -44,6 +44,12 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
  public:
   OpenArm_v10HW();
   // 以下几个接口属于SystemInterface要求的标准生命周期接口，分别对应硬件的初始化、配置、激活、停用、读取、写入等
+  /*
+  //插件加载的时候会自动调用生命周期回调
+    controller->on_init();      // 初始化
+    controller->on_configure(); // 配置
+    controller->on_activate();  // 激活
+  */
   TEMPLATES__ROS2_CONTROL__VISIBILITY_PUBLIC      // 是ROS2用于控制符号可见性的宏（对应 __attribute__((visibility("default")))），确保这些方法能被插件系统（pluginlib）识别和调用
   hardware_interface::CallbackReturn on_init(     // 初始化电机
       const hardware_interface::HardwareInfo& info) override;   // override显式声明重载基类的虚函数，避免隐式重载错误，提升代码可读性
@@ -133,6 +139,7 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
     MotorBackend motor_backend_ = MotorBackend::kDamiao;
   bool hand_;
   bool can_fd_;
+  bool auto_return_to_zero_on_activate_ = false;
 
     // Damiao backend instance
   std::unique_ptr<openarm::can::socket::OpenArm> openarm_;
@@ -152,8 +159,14 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   std::vector<double> vel_states_;
   std::vector<double> tau_states_;
 
+  // Temporary write inhibit window used after auto homing to avoid abrupt
+  // mode handover while controllers are still being activated.
+  std::chrono::steady_clock::time_point inhibit_robstride_write_until_ =
+      std::chrono::steady_clock::time_point::min();
+
   // Helper methods
   void return_to_zero();
+    void sync_commands_to_current_state();
     void return_to_zero_damiao();
     void return_to_zero_robstride();
 

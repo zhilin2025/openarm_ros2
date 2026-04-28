@@ -17,6 +17,8 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -136,6 +138,13 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
                 ? true
                 : parse_bool(it->second, true);
 
+  // Safety behavior on activate (default: do not auto return-to-zero)
+  it = info.hardware_parameters.find("auto_return_to_zero_on_activate");
+  auto_return_to_zero_on_activate_ =
+      (it == info.hardware_parameters.end())
+          ? false
+          : parse_bool(it->second, false);
+
   // Parse control gains
   for (size_t i = 1; i <= ARM_DOF; ++i) {
     it = info.hardware_parameters.find("kp" + std::to_string(i));
@@ -202,10 +211,11 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "Configuration: backend=%s, CAN=%s, arm_prefix=%s, hand=%s, "
-              "can_fd=%s",
+              "can_fd=%s, auto_return_to_zero_on_activate=%s",
               motor_backend_str_.c_str(), can_interface_.c_str(),
               arm_prefix_.c_str(), hand_ ? "enabled" : "disabled",
-              can_fd_ ? "enabled" : "disabled");
+              can_fd_ ? "enabled" : "disabled",
+              auto_return_to_zero_on_activate_ ? "true" : "false");
 
   if (motor_backend_ == MotorBackend::kRobStride) {
     RCLCPP_INFO(
@@ -336,6 +346,9 @@ OpenArm_v10HW::export_state_interfaces() {
   return state_interfaces;
 }
 
+//命令接口把内存暴露给控制器，控制器可以直接写入这些内存量的值，从而实现对硬件的控制
+//把 pos_commands_ / vel_commands_ / tau_commands_ 的地址注册给 controller_manager，控制器写的就是这些指针指向的内存
+//所以通过ros2 action send_goal 发布控制指令，控制器会根据指令更新 pos_commands_ / vel_commands_ / tau_commands_ 中的值，从而实现对硬件的控制
 std::vector<hardware_interface::CommandInterface>
 OpenArm_v10HW::export_command_interfaces() {
   std::vector<hardware_interface::CommandInterface> command_interfaces;
@@ -392,6 +405,14 @@ void OpenArm_v10HW::return_to_zero() {
     return;
   }
   return_to_zero_robstride();
+}
+
+void OpenArm_v10HW::sync_commands_to_current_state() {
+  for (size_t i = 0; i < pos_commands_.size() && i < pos_states_.size(); ++i) {
+    pos_commands_[i] = pos_states_[i];
+    vel_commands_[i] = 0.0;
+    tau_commands_[i] = 0.0;
+  }
 }
 
 bool OpenArm_v10HW::init_damiao_backend() {
@@ -467,7 +488,22 @@ hardware_interface::CallbackReturn OpenArm_v10HW::activate_damiao_backend() {
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   openarm_->recv_all();
 
-  return_to_zero();
+  (void)read_damiao_backend();
+
+  if (auto_return_to_zero_on_activate_) {
+    return_to_zero();
+    std::fill(pos_commands_.begin(), pos_commands_.end(), 0.0);
+    std::fill(vel_commands_.begin(), vel_commands_.end(), 0.0);
+    std::fill(tau_commands_.begin(), tau_commands_.end(), 0.0);
+    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                "auto_return_to_zero_on_activate=true: commanded zero position "
+                "during activation.");
+  } else {
+    sync_commands_to_current_state();
+    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                "auto_return_to_zero_on_activate=false: holding current "
+                "position at activation.");
+  }
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "OpenArm V10 activated (Damiao backend)");
@@ -477,6 +513,42 @@ hardware_interface::CallbackReturn OpenArm_v10HW::activate_damiao_backend() {
 hardware_interface::CallbackReturn OpenArm_v10HW::activate_robstride_backend() {
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "Activating OpenArm V10 with RobStride backend...");
+
+  auto wait_until_target_reached = [](RobStrideMotor& motor, float target,
+                                      float tolerance_rad = 0.01f,
+                                      int timeout_ms = 12000,
+                                      int poll_interval_ms = 2) {
+    constexpr uint16_t kMechPosIndex = 0x7019;
+    motor.drw.mechPos.data = std::numeric_limits<float>::quiet_NaN();
+
+    const auto start = std::chrono::steady_clock::now();
+    while (true) {
+      // PP mode may not stream status continuously, so actively poll mechPos.
+      if (!motor.receive_status_frame(0.05, false)) {
+        motor.Get_RobStrite_Motor_parameter(kMechPosIndex);
+      }
+
+      float feedback_position = motor.position_;
+      if (std::isfinite(motor.drw.mechPos.data)) {
+        feedback_position = motor.drw.mechPos.data;
+      }
+
+      if (std::isfinite(feedback_position) &&
+          std::fabs(feedback_position - target) <= tolerance_rad) {
+        return true;
+      }
+
+      const auto now = std::chrono::steady_clock::now();
+      const auto elapsed_ms =
+          std::chrono::duration_cast<std::chrono::milliseconds>(now - start)
+              .count();
+      if (elapsed_ms >= timeout_ms) {
+        return false;
+      }
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(poll_interval_ms));
+    }
+  };
 
   for (auto& motor : robstride_arm_motors_) {
     motor->Get_RobStrite_Motor_parameter(0x7005);
@@ -492,7 +564,71 @@ hardware_interface::CallbackReturn OpenArm_v10HW::activate_robstride_backend() {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
-  return_to_zero();
+  (void)read_robstride_backend();
+
+  if (auto_return_to_zero_on_activate_) {
+    return_to_zero();
+
+    constexpr float kHomeTarget = 0.0f;
+    for (size_t i = 0; i < ARM_DOF && i < robstride_arm_motors_.size(); ++i) {
+      const bool reached =
+          wait_until_target_reached(*robstride_arm_motors_[i], kHomeTarget);
+      if (!reached) {
+        RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                    "joint%zu did not reach target within timeout during "
+                    "activation return-to-zero.",
+                    i + 1);
+      }
+    }
+
+    if (hand_ && robstride_gripper_motor_) {
+      const float gripper_target =
+          static_cast<float>(joint_to_motor_radians(0.0));
+      const bool reached =
+          wait_until_target_reached(*robstride_gripper_motor_, gripper_target);
+      if (!reached) {
+        RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                    "Gripper did not reach target within timeout during "
+                    "activation return-to-zero.");
+      }
+    }
+
+    // Safety: initialize commands to homing targets directly instead of relying
+    // on a best-effort read that may contain stale values when CAN feedback
+    // times out intermittently.
+    for (size_t i = 0; i < ARM_DOF && i < pos_commands_.size(); ++i) {
+      pos_states_[i] = kHomeTarget;
+      vel_states_[i] = 0.0;
+      tau_states_[i] = 0.0;
+
+      pos_commands_[i] = kHomeTarget;
+      vel_commands_[i] = 0.0;
+      tau_commands_[i] = 0.0;
+    }
+
+    if (hand_ && joint_names_.size() > ARM_DOF) {
+      pos_states_[ARM_DOF] = 0.0;
+      vel_states_[ARM_DOF] = 0.0;
+      tau_states_[ARM_DOF] = 0.0;
+
+      pos_commands_[ARM_DOF] = 0.0;
+      vel_commands_[ARM_DOF] = 0.0;
+      tau_commands_[ARM_DOF] = 0.0;
+    }
+
+    inhibit_robstride_write_until_ =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(800);
+
+    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                "auto_return_to_zero_on_activate=true: performed PP return-to-zero "
+                "with completion wait, then latched command/state to homing target.");
+  } else {
+    inhibit_robstride_write_until_ = std::chrono::steady_clock::time_point::min();
+    sync_commands_to_current_state();
+    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                "auto_return_to_zero_on_activate=false: holding current "
+                "position at activation.");
+  }
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "OpenArm V10 activated (RobStride backend)");
@@ -552,14 +688,22 @@ hardware_interface::return_type OpenArm_v10HW::read_damiao_backend() {
 
 hardware_interface::return_type OpenArm_v10HW::read_robstride_backend() {
   for (size_t i = 0; i < ARM_DOF && i < robstride_arm_motors_.size(); ++i) {
-    robstride_arm_motors_[i]->receive_status_frame(0.002);
+    const bool received = robstride_arm_motors_[i]->receive_status_frame(0.002, false);
+    if (!received) {
+      // Keep publishing cached values so state interfaces do not freeze at
+      // initialization values when frames are intermittently missed.
+    }
     pos_states_[i] = robstride_arm_motors_[i]->position_;
     vel_states_[i] = robstride_arm_motors_[i]->velocity_;
     tau_states_[i] = robstride_arm_motors_[i]->torque_;
   }
 
   if (hand_ && robstride_gripper_motor_ && joint_names_.size() > ARM_DOF) {
-    robstride_gripper_motor_->receive_status_frame(0.002);
+    const bool received =
+        robstride_gripper_motor_->receive_status_frame(0.002, false);
+    if (!received) {
+      return hardware_interface::return_type::OK;
+    }
     pos_states_[ARM_DOF] =
         motor_radians_to_joint(robstride_gripper_motor_->position_);
     vel_states_[ARM_DOF] = robstride_gripper_motor_->velocity_;
@@ -588,6 +732,10 @@ hardware_interface::return_type OpenArm_v10HW::write_damiao_backend() {
 }
 
 hardware_interface::return_type OpenArm_v10HW::write_robstride_backend() {
+  if (std::chrono::steady_clock::now() < inhibit_robstride_write_until_) {
+    return hardware_interface::return_type::OK;
+  }
+
   for (size_t i = 0; i < ARM_DOF && i < robstride_arm_motors_.size(); ++i) {
     robstride_arm_motors_[i]->send_motion_command(
         static_cast<float>(tau_commands_[i]),
@@ -629,16 +777,20 @@ void OpenArm_v10HW::return_to_zero_robstride() {
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "Returning to zero position (RobStride backend)...");
 
+  constexpr float kReturnZeroSpeed = 1.0f;
+  constexpr float kReturnZeroAcceleration = 5.0f;
+  constexpr float kReturnZeroTarget = 0.0f;
+
   for (size_t i = 0; i < ARM_DOF && i < robstride_arm_motors_.size(); ++i) {
-    robstride_arm_motors_[i]->send_motion_command(
-        0.0f, 0.0f, 0.0f, static_cast<float>(kp_[i]), static_cast<float>(kd_[i]));
+    robstride_arm_motors_[i]->RobStrite_Motor_PosPP_control(
+        kReturnZeroSpeed, kReturnZeroAcceleration, kReturnZeroTarget);
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
   if (hand_ && robstride_gripper_motor_) {
-    robstride_gripper_motor_->send_motion_command(
-        0.0f, static_cast<float>(joint_to_motor_radians(0.0)), 0.0f,
-        static_cast<float>(GRIPPER_KP), static_cast<float>(GRIPPER_KD));
+    robstride_gripper_motor_->RobStrite_Motor_PosPP_control(
+        kReturnZeroSpeed, kReturnZeroAcceleration,
+        static_cast<float>(joint_to_motor_radians(0.0)));
   }
 }
 
