@@ -152,7 +152,7 @@ def generate_launch_description():
             # default_value="false",
             default_value="true",
             description="Use fake hardware instead of real hardware.",
-        ),
+        ), 
         DeclareLaunchArgument(
             "robot_controller",
             default_value="joint_trajectory_controller",

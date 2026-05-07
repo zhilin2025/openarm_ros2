@@ -394,9 +394,10 @@ hardware_interface::return_type OpenArm_v10HW::read(
 hardware_interface::return_type OpenArm_v10HW::write(
     const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/) {
 
-  // ---- 硬件级绝对防撞兜底: 限制所有下发的电机位置 ----
+  // ---- 硬件级绝对防撞兜底: 动态适配不同机械臂配置(单臂/左/右) ----
   // 限制所有关节位置在安全范围内, 硬件和rviz中的可视化表现一致
-  constexpr double kArmLimits[7][2] = {
+  // ！！！真机上机前一定需要先小浮动测试，观察是否和仿真环境的运动方向一致
+  double kArmLimits[7][2] = {
       {-1.396263, 3.490659},  // joint1
       {-1.745329, 1.745329},  // joint2
       {-1.570796, 1.570796},  // joint3
@@ -405,13 +406,23 @@ hardware_interface::return_type OpenArm_v10HW::write(
       {-0.785398, 0.785398},  // joint6
       {-1.570796, 1.570796}   // joint7
   };
-
+  
+  // 根据 openarm_arm.xacro 中真实的运动学偏置与翻转(reflect)调整双臂限位
+  if (arm_prefix_.find("right_") != std::string::npos) {
+    kArmLimits[1][0] = -0.174533; // ！！！(真机需要测试)joint2: -1.745 + M_PI/2，在rviz里面观察：-0.17的时候会和架子干涉，-0.05是安全的
+    kArmLimits[1][1] = 3.31613;   // joint2: 1.745 + M_PI/2
+  } else if (arm_prefix_.find("left_") != std::string::npos) {
+    kArmLimits[0][0] = -3.49066;  // joint1: -1.396 - 2.094
+    kArmLimits[0][1] = 1.39626;   // joint1: 3.490 - 2.094
+    kArmLimits[1][0] = -3.31613;  // joint2: -1.745 - M_PI/2 (且受reflect=-1反转)
+    kArmLimits[1][1] = 0.174533;  // ！！！（真机需要测试）joint2: 1.745 - M_PI/2 (且受reflect=-1反转)，在rviz里面观察：0.17的时候会和架子干涉，0.05是安全的
+  }
+  
   for (size_t i = 0; i < ARM_DOF && i < pos_commands_.size(); ++i) {
     pos_commands_[i] = std::clamp(pos_commands_[i], kArmLimits[i][0], kArmLimits[i][1]);
   }
   
   if (hand_ && pos_commands_.size() > ARM_DOF) {
-    // 夹爪直线行程安全限位
     pos_commands_[ARM_DOF] = std::clamp(pos_commands_[ARM_DOF], 0.0, 0.044);
   }
   // -----------------------------------------------------------

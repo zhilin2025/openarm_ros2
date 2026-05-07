@@ -221,7 +221,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "motor_backend",
-            default_value="damiao",
+            default_value="robstride",
             choices=["damiao", "robstride"],
             description="Motor backend type used by openarm_hardware.",
         ),
