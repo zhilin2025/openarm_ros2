@@ -736,7 +736,9 @@ hardware_interface::return_type OpenArm_v10HW::read_robstride_backend() {
     const bool received =
         robstride_gripper_motor_->receive_status_frame(0.002, false);
     if (!received) {
-      return hardware_interface::return_type::OK;
+      // return hardware_interface::return_type::OK;
+      // Keep publishing cached values so gripper state does not freeze when
+      // feedback frames are intermittent.
     }
     pos_states_[ARM_DOF] =
         motor_radians_to_joint(robstride_gripper_motor_->position_);

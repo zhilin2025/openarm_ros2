@@ -35,7 +35,7 @@ ros2 launch openarm_bringup openarm.launch.py arm_type:=v10 hardware_type:=real
 # 双臂运动控制
 启动双臂运动控制脚本
 ```bash
-ros2 launch openarm_bringup openarm.bimanual.launch.py 
+# ros2 launch openarm_bringup openarm.bimanual.launch.py 
 ```
 ```bash
 ros2 launch openarm_bringup openarm.bimanual.launch.py use_fake_hardware:=false motor_backend:=robstride right_can_interface:=can0 left_can_interface:=can1 robstride_master_id:=253 robstride_joint_ids:=1,2,3,4,5,6,7 robstride_joint_types:=3,3,6,6,0,0,0 robstride_gripper_id:=8 robstride_gripper_type:=0 auto_return_to_zero_on_activate:=false
@@ -61,7 +61,7 @@ ros2 action send_goal /left_gripper_controller/gripper_cmd control_msgs/action/G
 # 单臂运动控制
 启动单臂运动控制脚本
 ```bash
-ros2 launch openarm_bringup openarm.launch.py
+# ros2 launch openarm_bringup openarm.launch.py
 ```
 控制单臂运动到指定位置
 ```bash
