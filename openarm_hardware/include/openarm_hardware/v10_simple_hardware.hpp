@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -65,6 +66,16 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   TEMPLATES__ROS2_CONTROL__VISIBILITY_PUBLIC
   std::vector<hardware_interface::CommandInterface> export_command_interfaces()  //导出指令接口：向 ROS 2 Control 注册硬件的可写入指令（如关节位置、速度、力矩指令），让框架能下发控制指令。
       override;
+
+    TEMPLATES__ROS2_CONTROL__VISIBILITY_PUBLIC
+    hardware_interface::return_type prepare_command_mode_switch(    // 重写虚函数，当向服务请求模式切换时，controller_manager会调用这个函数（ros2 control框架生命周期管理的方式），硬件接口可以在这里准备切换（如同步状态到命令，打印日志等），但不执行实际切换逻辑。
+      const std::vector<std::string>& start_interfaces,
+      const std::vector<std::string>& stop_interfaces) override;
+
+    TEMPLATES__ROS2_CONTROL__VISIBILITY_PUBLIC
+    hardware_interface::return_type perform_command_mode_switch(    // 重写虚函数，当向服务请求模式切换时，controller_manager会调用这个函数，硬件接口可以在这里执行实际切换逻辑。
+      const std::vector<std::string>& start_interfaces,
+      const std::vector<std::string>& stop_interfaces) override;
 
   TEMPLATES__ROS2_CONTROL__VISIBILITY_PUBLIC
   hardware_interface::CallbackReturn on_activate(   //硬件激活：将硬件从「配置态」切换到「激活态」（如使能电机、归位到零位）
@@ -124,6 +135,9 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   // Gains kp_ 决定「关节有多快能到达目标位置」，kd_ 决定「关节到达目标位置时有多稳」
   std::vector<double> kp_ = {70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0};
   std::vector<double> kd_ = {2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5};
+
+  std::atomic<bool> effort_mode_{false};
+  double zero_torque_kd_{0.3};
 
   const double GRIPPER_JOINT_0_POSITION = 0.044;
   const double GRIPPER_JOINT_1_POSITION = 0.0;

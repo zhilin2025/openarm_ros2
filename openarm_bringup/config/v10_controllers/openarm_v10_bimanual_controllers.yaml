@@ -32,6 +32,9 @@ controller_manager:
     left_gripper_controller:
       type: position_controllers/GripperActionController
 
+    left_zero_torque_controller:
+      type: openarm_hardware/ZeroTorqueController
+
     right_forward_position_controller:
       type: forward_command_controller/ForwardCommandController
 
@@ -43,6 +46,9 @@ controller_manager:
 
     right_gripper_controller:
       type: position_controllers/GripperActionController
+
+    right_zero_torque_controller:
+      type: openarm_hardware/ZeroTorqueController
 
 
 left_forward_position_controller:
@@ -173,3 +179,29 @@ right_gripper_controller:
       - position
     state_interfaces:
       - position
+
+left_zero_torque_controller:
+  ros__parameters:
+    joints:
+      - openarm_left_joint1
+      - openarm_left_joint2
+      - openarm_left_joint3
+      - openarm_left_joint4
+      - openarm_left_joint5
+      - openarm_left_joint6
+      - openarm_left_joint7
+    kd: 0.3
+    robot_description_node: controller_manager
+
+right_zero_torque_controller:
+  ros__parameters:
+    joints:
+      - openarm_right_joint1
+      - openarm_right_joint2
+      - openarm_right_joint3
+      - openarm_right_joint4
+      - openarm_right_joint5
+      - openarm_right_joint6
+      - openarm_right_joint7
+    kd: 0.3
+    robot_description_node: controller_manager

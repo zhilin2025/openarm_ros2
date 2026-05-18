@@ -1,0 +1,9 @@
+<library path="openarm_hardware">
+  <class name="openarm_hardware/ZeroTorqueController"
+         type="openarm_hardware::ZeroTorqueController"
+         base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Zero-torque (gravity compensated) controller for OpenArm.
+    </description>
+  </class>
+</library>

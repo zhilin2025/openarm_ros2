@@ -200,7 +200,7 @@ def generate_launch_description():
         DeclareLaunchArgument("left_can_interface", default_value="can1"),
         DeclareLaunchArgument(
             "motor_backend",
-            default_value="damiao",
+            default_value="robstride",
             choices=["damiao", "robstride"],
         ),
         DeclareLaunchArgument("robstride_master_id", default_value="253"),

@@ -289,6 +289,12 @@ def generate_launch_description():
         arguments=["gripper_controller", "-c", "/controller_manager"],
     )
 
+    zero_torque_controller_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["zero_torque_controller", "-c", "/controller_manager", "--inactive"],
+    )
+
     # Timing and sequencing
     # 确保 ros2_control_node / controller_manager 已就绪后再加载控制器，避免启动顺序问题（整个控制节点启动之后再加载各个控制器）
     delayed_joint_state_broadcaster = TimerAction(
@@ -305,6 +311,11 @@ def generate_launch_description():
         actions=[gripper_controller_spawner],
     )
 
+    delayed_zero_torque_controller = TimerAction(
+        period=1.0,
+        actions=[zero_torque_controller_spawner],
+    )
+
     return LaunchDescription(
         declared_arguments + [
             robot_nodes_spawner_func,
@@ -314,5 +325,6 @@ def generate_launch_description():
             delayed_joint_state_broadcaster,
             delayed_robot_controller,
             delayed_gripper_controller,
+            delayed_zero_torque_controller,
         ]
     )

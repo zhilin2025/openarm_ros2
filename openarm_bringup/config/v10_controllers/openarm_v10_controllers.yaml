@@ -36,6 +36,9 @@ controller_manager:
     gripper_controller:
       type: position_controllers/GripperActionController
 
+    zero_torque_controller:
+      type: openarm_hardware/ZeroTorqueController
+
 # 简单的位置控制器，作用是 “把上层发来的位置命令直接转发给硬件”，不做任何轨迹规划或平滑处理
 forward_position_controller:
   ros__parameters:
@@ -103,3 +106,16 @@ gripper_controller:
       - position
     state_interfaces:
       - position
+
+zero_torque_controller:
+  ros__parameters:
+    joints:
+      - openarm_joint1
+      - openarm_joint2
+      - openarm_joint3
+      - openarm_joint4
+      - openarm_joint5
+      - openarm_joint6
+      - openarm_joint7
+    kd: 0.3
+    robot_description_node: controller_manager

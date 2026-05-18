@@ -157,6 +157,12 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
     }
   }
 
+  it = info.hardware_parameters.find("zero_torque_kd");
+  if (it != info.hardware_parameters.end()) {
+    zero_torque_kd_ = std::stod(it->second);
+    zero_torque_kd_ = std::clamp(zero_torque_kd_, 0.0, 5.0);
+  }
+
   if (motor_backend_ == MotorBackend::kRobStride) {
     try {
       it = info.hardware_parameters.find("robstride_master_id");
@@ -367,6 +373,60 @@ OpenArm_v10HW::export_command_interfaces() {
   return command_interfaces;
 }
 
+hardware_interface::return_type OpenArm_v10HW::prepare_command_mode_switch(
+    const std::vector<std::string>& start_interfaces,
+    const std::vector<std::string>& /*stop_interfaces*/) {
+  bool wants_effort = false;
+  for (const auto& iface : start_interfaces) {
+    if (iface.find("effort") != std::string::npos) {
+      wants_effort = true;
+      break;
+    }
+  }
+
+  if (wants_effort) {
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Preparing switch to effort (zero-torque) mode");
+  }
+  return hardware_interface::return_type::OK;
+}
+
+hardware_interface::return_type OpenArm_v10HW::perform_command_mode_switch(
+    const std::vector<std::string>& start_interfaces,
+    const std::vector<std::string>& stop_interfaces) {
+  bool starting_effort = false;
+  bool stopping_effort = false;
+
+  for (const auto& iface : start_interfaces) {
+    if (iface.find("effort") != std::string::npos) {
+      starting_effort = true;
+      break;
+    }
+  }
+  for (const auto& iface : stop_interfaces) {
+    if (iface.find("effort") != std::string::npos) {
+      stopping_effort = true;
+      break;
+    }
+  }
+
+  if (starting_effort && !effort_mode_) {
+    effort_mode_ = true;
+    sync_commands_to_current_state();
+    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                "Switched to effort mode (Kp=0, Kd=%.3f)", zero_torque_kd_);
+  }
+
+  if (stopping_effort && effort_mode_) {
+    effort_mode_ = false;
+    sync_commands_to_current_state();
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Switched to position mode");
+  }
+
+  return hardware_interface::return_type::OK;
+}
+
 hardware_interface::CallbackReturn OpenArm_v10HW::on_activate(
     const rclcpp_lifecycle::State& /*previous_state*/) {
   if (motor_backend_ == MotorBackend::kDamiao) {
@@ -441,7 +501,7 @@ void OpenArm_v10HW::return_to_zero() {
   return_to_zero_robstride();
 }
 
-void OpenArm_v10HW::sync_commands_to_current_state() {
+void OpenArm_v10HW::sync_commands_to_current_state() {    // 将当前状态同步到命令向量，避免模式切换时的突变
   for (size_t i = 0; i < pos_commands_.size() && i < pos_states_.size(); ++i) {
     pos_commands_[i] = pos_states_[i];
     vel_commands_[i] = 0.0;
@@ -751,9 +811,13 @@ hardware_interface::return_type OpenArm_v10HW::read_robstride_backend() {
 
 hardware_interface::return_type OpenArm_v10HW::write_damiao_backend() {
   std::vector<openarm::damiao_motor::MITParam> arm_params;
+  const bool effort_mode = effort_mode_.load();
   for (size_t i = 0; i < ARM_DOF; ++i) {
-    arm_params.push_back(
-        {kp_[i], kd_[i], pos_commands_[i], vel_commands_[i], tau_commands_[i]});
+    const double cmd_kp = effort_mode ? 0.0 : kp_[i];
+    const double cmd_kd = effort_mode ? zero_torque_kd_ : kd_[i];
+    const double cmd_pos = effort_mode ? pos_states_[i] : pos_commands_[i];
+    const double cmd_vel = effort_mode ? 0.0 : vel_commands_[i];
+    arm_params.push_back({cmd_kp, cmd_kd, cmd_pos, cmd_vel, tau_commands_[i]});
   }
   openarm_->get_arm().mit_control_all(arm_params);
 
@@ -772,12 +836,20 @@ hardware_interface::return_type OpenArm_v10HW::write_robstride_backend() {
     return hardware_interface::return_type::OK;
   }
 
+  const bool effort_mode = effort_mode_.load();
   for (size_t i = 0; i < ARM_DOF && i < robstride_arm_motors_.size(); ++i) {
+    const float cmd_kp = effort_mode ? 0.0f : static_cast<float>(kp_[i]);
+    const float cmd_kd = effort_mode ? static_cast<float>(zero_torque_kd_)
+                                     : static_cast<float>(kd_[i]);
+    const float cmd_pos = effort_mode ? static_cast<float>(pos_states_[i])
+                                      : static_cast<float>(pos_commands_[i]);
+    const float cmd_vel = effort_mode ? 0.0f : static_cast<float>(vel_commands_[i]);
     robstride_arm_motors_[i]->send_motion_command(
         static_cast<float>(tau_commands_[i]),
-        static_cast<float>(pos_commands_[i]),
-        static_cast<float>(vel_commands_[i]), static_cast<float>(kp_[i]),
-        static_cast<float>(kd_[i]));
+        cmd_pos,
+        cmd_vel,
+        cmd_kp,
+        cmd_kd);
   }
 
   if (hand_ && robstride_gripper_motor_ && joint_names_.size() > ARM_DOF) {

@@ -22,16 +22,20 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(hardware_interface REQUIRED)
+find_package(controller_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(rs_motor_ros2 REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(pinocchio REQUIRED)
 
 # Find openarm_can library
 find_package(OpenArmCAN REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
   src/v10_simple_hardware.cpp
+  src/zero_torque_controller.cpp
 )
 
 target_include_directories(
@@ -61,18 +65,28 @@ endif()
 
 ament_target_dependencies(${PROJECT_NAME}
   hardware_interface
+  controller_interface
   pluginlib
   rclcpp
   rclcpp_lifecycle
   rs_motor_ros2
+  sensor_msgs
 )
 
+target_link_libraries(${PROJECT_NAME} pinocchio::pinocchio)
+
 pluginlib_export_plugin_description_file(hardware_interface openarm_hardware.xml)
+pluginlib_export_plugin_description_file(controller_interface openarm_controller_plugin.xml)
 
 install(
   TARGETS ${PROJECT_NAME}
   DESTINATION lib
   )
+
+install(
+  FILES openarm_hardware.xml openarm_controller_plugin.xml
+  DESTINATION share/${PROJECT_NAME}
+)
 
 install(DIRECTORY include/
 DESTINATION include
@@ -91,6 +105,9 @@ ament_export_dependencies(
   pluginlib
   rclcpp
   rs_motor_ros2
+  controller_interface
+  sensor_msgs
+  pinocchio
 )
 
 ament_package()

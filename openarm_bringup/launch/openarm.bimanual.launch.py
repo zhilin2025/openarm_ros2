@@ -335,6 +335,18 @@ def generate_launch_description():
         )]
     )
 
+    zero_torque_controller_spawner = OpaqueFunction(
+        function=lambda context: [Node(
+            package="controller_manager",
+            executable="spawner",
+            namespace=namespace_from_context(context, arm_prefix),
+            arguments=["left_zero_torque_controller",
+                       "right_zero_torque_controller", "-c",
+                       f"/{namespace_from_context(context, arm_prefix)}/controller_manager" if namespace_from_context(context, arm_prefix) else "/controller_manager",
+                       "--inactive"],
+        )]
+    )
+
     # Timing and sequencing
     LAUNCH_DELAY_SECONDS = 1.0
     delayed_joint_state_broadcaster = TimerAction(
@@ -351,6 +363,11 @@ def generate_launch_description():
         actions=[gripper_controller_spawner],
     )
 
+    delayed_zero_torque_controller = TimerAction(
+        period=LAUNCH_DELAY_SECONDS,
+        actions=[zero_torque_controller_spawner],
+    )
+
     return LaunchDescription(
         declared_arguments + [
             robot_nodes_spawner_func,
@@ -360,5 +377,6 @@ def generate_launch_description():
             delayed_joint_state_broadcaster,
             delayed_robot_controller,
             delayed_gripper_controller,
+            delayed_zero_torque_controller,
         ]
     )
