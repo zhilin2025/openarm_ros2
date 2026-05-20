@@ -12,6 +12,7 @@ controller_interface::CallbackReturn ZeroTorqueController::on_init()
 {
   auto_declare<std::vector<std::string>>("joints", std::vector<std::string>{});
   auto_declare<double>("kd", 1.0);
+  auto_declare<double>("gravity_scale", 1.0);
   auto_declare<std::string>("urdf_path", "");
   auto_declare<std::string>("robot_description_node", "controller_manager");
   return controller_interface::CallbackReturn::SUCCESS;
@@ -29,6 +30,9 @@ controller_interface::CallbackReturn ZeroTorqueController::on_configure(
   kd_ = get_node()->get_parameter("kd").as_double();
   kd_ = std::clamp(kd_, 0.0, 5.0);
 
+  gravity_scale_ = get_node()->get_parameter("gravity_scale").as_double();
+  gravity_scale_ = std::clamp(gravity_scale_, 0.0, 1.0);
+
   urdf_path_ = get_node()->get_parameter("urdf_path").as_string();
   robot_description_node_ = get_node()->get_parameter("robot_description_node").as_string();
 
@@ -45,8 +49,9 @@ controller_interface::CallbackReturn ZeroTorqueController::on_configure(
     "~/gravity_torque", 10);
 
   RCLCPP_INFO(get_node()->get_logger(),
-              "ZeroTorqueController configured: joints=%zu, kd=%.3f, pinocchio=%s",
-              joint_names_.size(), kd_, pinocchio_ok_ ? "yes" : "no");
+              "ZeroTorqueController configured: joints=%zu, kd=%.3f, gravity_scale=%.2f, "
+              "pinocchio=%s",
+              joint_names_.size(), kd_, gravity_scale_, pinocchio_ok_ ? "yes" : "no");
 
   return controller_interface::CallbackReturn::SUCCESS;
 }
@@ -78,8 +83,8 @@ controller_interface::CallbackReturn ZeroTorqueController::on_activate(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {
   RCLCPP_WARN(get_node()->get_logger(),
-              "Zero-torque mode ACTIVATED (kd=%.3f, gravity=%s)",
-              kd_, pinocchio_ok_ ? "on" : "off");
+              "Zero-torque mode ACTIVATED (controller_kd=%.3f, gravity_scale=%.2f, pinocchio=%s)",
+              kd_, gravity_scale_, pinocchio_ok_ ? "on" : "off");
   return controller_interface::CallbackReturn::SUCCESS;
 }
 
@@ -120,6 +125,12 @@ controller_interface::return_type ZeroTorqueController::update(
     } catch (const std::exception & e) {
       RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 2000,
                            "ZeroTorqueController Pinocchio error: %s", e.what());
+    }
+  }
+
+  if (gravity_scale_ != 1.0) {
+    for (auto & torque : gravity_torques) {
+      torque *= gravity_scale_;
     }
   }
 

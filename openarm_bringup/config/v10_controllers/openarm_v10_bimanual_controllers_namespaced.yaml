@@ -154,6 +154,7 @@
       - openarm_left_joint6
       - openarm_left_joint7
     kd: 0.3
+    gravity_scale: 1.0
     robot_description_node: controller_manager
 
 /**/right_zero_torque_controller:
@@ -167,4 +168,5 @@
       - openarm_right_joint6
       - openarm_right_joint7
     kd: 0.3
+    gravity_scale: 1.0
     robot_description_node: controller_manager

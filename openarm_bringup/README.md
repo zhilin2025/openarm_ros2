@@ -38,7 +38,7 @@ ros2 launch openarm_bringup openarm.launch.py arm_type:=v10 hardware_type:=real
 # ros2 launch openarm_bringup openarm.bimanual.launch.py 
 ```
 ```bash
-ros2 launch openarm_bringup openarm.bimanual.launch.py use_fake_hardware:=false motor_backend:=robstride right_can_interface:=can0 left_can_interface:=can1 robstride_master_id:=253 robstride_joint_ids:=1,2,3,4,5,6,7 robstride_joint_types:=3,3,6,6,0,0,0 robstride_gripper_id:=8 robstride_gripper_type:=0 auto_return_to_zero_on_activate:=false
+ros2 launch openarm_bringup openarm.bimanual.launch.py use_fake_hardware:=false motor_backend:=robstride right_can_interface:=can0 left_can_interface:=can1 robstride_master_id:=253 robstride_joint_ids:=1,2,3,4,5,6,7 robstride_joint_types:=3,3,6,6,0,0,0 robstride_gripper_id:=8 robstride_gripper_type:=0 auto_return_to_zero_on_activate:=false gravity_scale:=0.0 zero_torque_kd:=0.5
 ```
 
 控制左臂运动到指定位置
@@ -77,5 +77,5 @@ ros2 action send_goal /gripper_controller/gripper_cmd control_msgs/action/Grippe
 
 多功能调试：(先不要开启自动回零，执行前需要先手动回零，然后再执行下面发布控制指令)
 ```bash
-ros2 launch openarm_bringup openarm.launch.py use_fake_hardware:=false motor_backend:=robstride can_interface:=can0 robstride_master_id:=253 robstride_joint_ids:=1,2,3,4,5,6,7 robstride_joint_types:=3,3,6,6,0,0,0 robstride_gripper_id:=8 robstride_gripper_type:=0 auto_return_to_zero_on_activate:=false
+ros2 launch openarm_bringup openarm.launch.py use_fake_hardware:=false motor_backend:=robstride can_interface:=can0 robstride_master_id:=253 robstride_joint_ids:=1,2,3,4,5,6,7 robstride_joint_types:=3,3,6,6,0,0,0 robstride_gripper_id:=8 robstride_gripper_type:=0 auto_return_to_zero_on_activate:=false gravity_scale:=0.0 zero_torque_kd:=0.5
 ```

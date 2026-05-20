@@ -44,6 +44,7 @@ private:
   std::vector<std::string> joint_names_;
   std::vector<pinocchio::JointIndex> joint_ids_;
   double kd_{1.0};
+  double gravity_scale_{1.0};
 
   std::string urdf_path_;
   std::string robot_description_node_;

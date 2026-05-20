@@ -163,6 +163,24 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
     zero_torque_kd_ = std::clamp(zero_torque_kd_, 0.0, 5.0);
   }
 
+  it = info.hardware_parameters.find("limit_margin");
+  if (it != info.hardware_parameters.end()) {
+    limit_margin_ = std::max(0.0, std::stod(it->second));
+  }
+  it = info.hardware_parameters.find("limit_stop_margin");
+  if (it != info.hardware_parameters.end()) {
+    limit_stop_margin_ = std::max(0.0, std::stod(it->second));
+  }
+  it = info.hardware_parameters.find("limit_decel_factor");
+  if (it != info.hardware_parameters.end()) {
+    limit_decel_factor_ = std::stod(it->second);
+    limit_decel_factor_ = std::clamp(limit_decel_factor_, 0.0, 1.0);
+  }
+
+  if (limit_stop_margin_ > limit_margin_) {
+    limit_stop_margin_ = limit_margin_;
+  }
+
   if (motor_backend_ == MotorBackend::kRobStride) {
     try {
       it = info.hardware_parameters.find("robstride_master_id");
@@ -223,6 +241,10 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
               can_fd_ ? "enabled" : "disabled",
               auto_return_to_zero_on_activate_ ? "true" : "false");
 
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Limit protection: margin=%.3f, stop_margin=%.3f, decel_factor=%.2f",
+              limit_margin_, limit_stop_margin_, limit_decel_factor_);
+
   if (motor_backend_ == MotorBackend::kRobStride) {
     RCLCPP_INFO(
         rclcpp::get_logger("OpenArm_v10HW"),
@@ -271,6 +293,31 @@ void OpenArm_v10HW::generate_joint_names() {
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "Generated %zu joint names for arm prefix '%s'",
               joint_names_.size(), arm_prefix_.c_str());
+}
+
+std::array<std::array<double, 2>, OpenArm_v10HW::ARM_DOF>
+OpenArm_v10HW::compute_arm_limits() const {
+  std::array<std::array<double, 2>, ARM_DOF> limits = {{
+      {{-1.396263, 3.490659}},  // joint1
+      {{-1.745329, 1.745329}},  // joint2
+      {{-1.570796, 1.570796}},  // joint3
+      {{0.0, 2.443461}},        // joint4
+      {{-1.570796, 1.570796}},  // joint5
+      {{-0.785398, 0.785398}},  // joint6
+      {{-1.570796, 1.570796}}   // joint7
+  }};
+
+  if (arm_prefix_.find("right_") != std::string::npos) {
+    limits[1][0] = -0.174533;  // joint2: -1.745 + M_PI/2
+    limits[1][1] = 3.31613;    // joint2: 1.745 + M_PI/2
+  } else if (arm_prefix_.find("left_") != std::string::npos) {
+    limits[0][0] = -3.49066;   // joint1: -1.396 - 2.094
+    limits[0][1] = 1.39626;    // joint1: 3.490 - 2.094
+    limits[1][0] = -3.31613;   // joint2: -1.745 - M_PI/2 (reflect=-1)
+    limits[1][1] = 0.174533;   // joint2: 1.745 - M_PI/2 (reflect=-1)
+  }
+
+  return limits;
 }
 
 hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
@@ -457,29 +504,10 @@ hardware_interface::return_type OpenArm_v10HW::write(
   // ---- 硬件级绝对防撞兜底: 动态适配不同机械臂配置(单臂/左/右) ----
   // 限制所有关节位置在安全范围内, 硬件和rviz中的可视化表现一致
   // ！！！真机上机前一定需要先小浮动测试，观察是否和仿真环境的运动方向一致
-  double kArmLimits[7][2] = {
-      {-1.396263, 3.490659},  // joint1
-      {-1.745329, 1.745329},  // joint2
-      {-1.570796, 1.570796},  // joint3
-      {0.0, 2.443461},        // joint4
-      {-1.570796, 1.570796},  // joint5
-      {-0.785398, 0.785398},  // joint6
-      {-1.570796, 1.570796}   // joint7
-  };
-  
-  // 根据 openarm_arm.xacro 中真实的运动学偏置与翻转(reflect)调整双臂限位
-  if (arm_prefix_.find("right_") != std::string::npos) {
-    kArmLimits[1][0] = -0.174533; // ！！！(真机需要测试)joint2: -1.745 + M_PI/2，在rviz里面观察：-0.17的时候会和架子干涉，-0.05是安全的
-    kArmLimits[1][1] = 3.31613;   // joint2: 1.745 + M_PI/2
-  } else if (arm_prefix_.find("left_") != std::string::npos) {
-    kArmLimits[0][0] = -3.49066;  // joint1: -1.396 - 2.094
-    kArmLimits[0][1] = 1.39626;   // joint1: 3.490 - 2.094
-    kArmLimits[1][0] = -3.31613;  // joint2: -1.745 - M_PI/2 (且受reflect=-1反转)
-    kArmLimits[1][1] = 0.174533;  // ！！！（真机需要测试）joint2: 1.745 - M_PI/2 (且受reflect=-1反转)，在rviz里面观察：0.17的时候会和架子干涉，0.05是安全的
-  }
-  
+  const auto arm_limits = compute_arm_limits();
+
   for (size_t i = 0; i < ARM_DOF && i < pos_commands_.size(); ++i) {
-    pos_commands_[i] = std::clamp(pos_commands_[i], kArmLimits[i][0], kArmLimits[i][1]);
+    pos_commands_[i] = std::clamp(pos_commands_[i], arm_limits[i][0], arm_limits[i][1]);
   }
   
   if (hand_ && pos_commands_.size() > ARM_DOF) {
@@ -812,12 +840,37 @@ hardware_interface::return_type OpenArm_v10HW::read_robstride_backend() {
 hardware_interface::return_type OpenArm_v10HW::write_damiao_backend() {
   std::vector<openarm::damiao_motor::MITParam> arm_params;
   const bool effort_mode = effort_mode_.load();
+  const auto arm_limits = compute_arm_limits();
+  auto apply_effort_limit = [&](size_t idx, double pos, double tau) {
+    if (!effort_mode) {
+      return tau;
+    }
+
+    const double lower = arm_limits[idx][0];
+    const double upper = arm_limits[idx][1];
+    if (pos <= lower + limit_stop_margin_ && tau < 0.0) {
+      return 0.0;
+    }
+    if (pos >= upper - limit_stop_margin_ && tau > 0.0) {
+      return 0.0;
+    }
+    if (pos <= lower + limit_margin_ && tau < 0.0) {
+      return tau * limit_decel_factor_;
+    }
+    if (pos >= upper - limit_margin_ && tau > 0.0) {
+      return tau * limit_decel_factor_;
+    }
+    return tau;
+  };
+
   for (size_t i = 0; i < ARM_DOF; ++i) {
     const double cmd_kp = effort_mode ? 0.0 : kp_[i];
     const double cmd_kd = effort_mode ? zero_torque_kd_ : kd_[i];
     const double cmd_pos = effort_mode ? pos_states_[i] : pos_commands_[i];
     const double cmd_vel = effort_mode ? 0.0 : vel_commands_[i];
-    arm_params.push_back({cmd_kp, cmd_kd, cmd_pos, cmd_vel, tau_commands_[i]});
+    double cmd_tau = tau_commands_[i];
+    cmd_tau = apply_effort_limit(i, pos_states_[i], cmd_tau);
+    arm_params.push_back({cmd_kp, cmd_kd, cmd_pos, cmd_vel, cmd_tau});
   }
   openarm_->get_arm().mit_control_all(arm_params);
 
@@ -837,6 +890,29 @@ hardware_interface::return_type OpenArm_v10HW::write_robstride_backend() {
   }
 
   const bool effort_mode = effort_mode_.load();
+  const auto arm_limits = compute_arm_limits();
+  auto apply_effort_limit = [&](size_t idx, double pos, float tau) {
+    if (!effort_mode) {
+      return tau;
+    }
+
+    const double lower = arm_limits[idx][0];
+    const double upper = arm_limits[idx][1];
+    if (pos <= lower + limit_stop_margin_ && tau < 0.0f) {
+      return 0.0f;
+    }
+    if (pos >= upper - limit_stop_margin_ && tau > 0.0f) {
+      return 0.0f;
+    }
+    if (pos <= lower + limit_margin_ && tau < 0.0f) {
+      return tau * static_cast<float>(limit_decel_factor_);
+    }
+    if (pos >= upper - limit_margin_ && tau > 0.0f) {
+      return tau * static_cast<float>(limit_decel_factor_);
+    }
+    return tau;
+  };
+
   for (size_t i = 0; i < ARM_DOF && i < robstride_arm_motors_.size(); ++i) {
     const float cmd_kp = effort_mode ? 0.0f : static_cast<float>(kp_[i]);
     const float cmd_kd = effort_mode ? static_cast<float>(zero_torque_kd_)
@@ -844,8 +920,10 @@ hardware_interface::return_type OpenArm_v10HW::write_robstride_backend() {
     const float cmd_pos = effort_mode ? static_cast<float>(pos_states_[i])
                                       : static_cast<float>(pos_commands_[i]);
     const float cmd_vel = effort_mode ? 0.0f : static_cast<float>(vel_commands_[i]);
+    float cmd_tau = static_cast<float>(tau_commands_[i]);
+    cmd_tau = apply_effort_limit(i, pos_states_[i], cmd_tau);
     robstride_arm_motors_[i]->send_motion_command(
-        static_cast<float>(tau_commands_[i]),
+        cmd_tau,
         cmd_pos,
         cmd_vel,
         cmd_kp,

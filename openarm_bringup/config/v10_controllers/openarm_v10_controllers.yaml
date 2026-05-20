@@ -118,4 +118,5 @@ zero_torque_controller:
       - openarm_joint6
       - openarm_joint7
     kd: 0.3
+    gravity_scale: 1.0
     robot_description_node: controller_manager

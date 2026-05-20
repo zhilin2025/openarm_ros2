@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -138,6 +139,9 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
 
   std::atomic<bool> effort_mode_{false};
   double zero_torque_kd_{0.3};
+  double limit_margin_{0.1};        // 软限位的“减速区”宽度(rad)，进入该区且力矩继续往限位方向推时，力矩会被按比例缩小
+  double limit_stop_margin_{0.02};  // 软限位的“停止区”宽度(rad)，进入该区且力矩为0时，力矩会被保持在0
+  double limit_decel_factor_{0.2};  // 减速区内的缩放比例（0~1），0.2 指只保留 20% 的力矩
 
   const double GRIPPER_JOINT_0_POSITION = 0.044;
   const double GRIPPER_JOINT_1_POSITION = 0.0;
@@ -204,6 +208,7 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
 
   bool parse_config(const hardware_interface::HardwareInfo& info);
   void generate_joint_names();
+  std::array<std::array<double, 2>, ARM_DOF> compute_arm_limits() const;
     std::vector<uint8_t> parse_u8_list(const std::string& value,
                                                                          size_t expected_size) const;
     std::vector<int> parse_int_list(const std::string& value,

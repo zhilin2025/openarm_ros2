@@ -42,7 +42,9 @@ def generate_robot_description(context: LaunchContext, description_package, desc
                                robstride_master_id, robstride_joint_ids,
                                robstride_joint_types, robstride_gripper_id,
                                robstride_gripper_type,
-                               auto_return_to_zero_on_activate):
+                               auto_return_to_zero_on_activate, limit_margin,
+                               limit_stop_margin, limit_decel_factor,
+                               zero_torque_kd):
     """Generate robot description using xacro processing."""
 
     description_package_str = context.perform_substitution(description_package)
@@ -59,6 +61,10 @@ def generate_robot_description(context: LaunchContext, description_package, desc
     robstride_gripper_type_str = context.perform_substitution(robstride_gripper_type)
     auto_return_to_zero_on_activate_str = context.perform_substitution(
         auto_return_to_zero_on_activate)
+    limit_margin_str = context.perform_substitution(limit_margin)
+    limit_stop_margin_str = context.perform_substitution(limit_stop_margin)
+    limit_decel_factor_str = context.perform_substitution(limit_decel_factor)
+    zero_torque_kd_str = context.perform_substitution(zero_torque_kd)
 
     xacro_path = os.path.join(
         get_package_share_directory(description_package_str),
@@ -82,6 +88,10 @@ def generate_robot_description(context: LaunchContext, description_package, desc
             "robstride_gripper_id": robstride_gripper_id_str,
             "robstride_gripper_type": robstride_gripper_type_str,
             "auto_return_to_zero_on_activate": auto_return_to_zero_on_activate_str,
+            "limit_margin": limit_margin_str,
+            "limit_stop_margin": limit_stop_margin_str,
+            "limit_decel_factor": limit_decel_factor_str,
+            "zero_torque_kd": zero_torque_kd_str,
         }
     ).toprettyxml(indent="  ")
 
@@ -94,7 +104,9 @@ def robot_nodes_spawner(context: LaunchContext, description_package, description
                         motor_backend, robstride_master_id,
                         robstride_joint_ids, robstride_joint_types,
                         robstride_gripper_id, robstride_gripper_type,
-                        auto_return_to_zero_on_activate):
+                        auto_return_to_zero_on_activate, limit_margin,
+                        limit_stop_margin, limit_decel_factor,
+                        zero_torque_kd, gravity_scale):
     """Spawn both robot state publisher and control nodes with shared robot description."""
     namespace = namespace_from_context(context, arm_prefix)
 
@@ -103,11 +115,30 @@ def robot_nodes_spawner(context: LaunchContext, description_package, description
         use_fake_hardware, right_can_interface, left_can_interface,
         motor_backend, robstride_master_id, robstride_joint_ids,
         robstride_joint_types, robstride_gripper_id, robstride_gripper_type,
-        auto_return_to_zero_on_activate,
+        auto_return_to_zero_on_activate, limit_margin, limit_stop_margin,
+        limit_decel_factor, zero_torque_kd,
     )
 
     controllers_file_str = context.perform_substitution(controllers_file)
     robot_description_param = {"robot_description": robot_description}
+    gravity_scale_value = float(context.perform_substitution(gravity_scale))
+    zero_torque_kd_value = float(context.perform_substitution(zero_torque_kd))
+    controller_params = {
+        "left_zero_torque_controller.gravity_scale": gravity_scale_value,
+        "left_zero_torque_controller.kd": zero_torque_kd_value,
+        "right_zero_torque_controller.gravity_scale": gravity_scale_value,
+        "right_zero_torque_controller.kd": zero_torque_kd_value,
+    }
+    # controller_params = {
+    #     "left_zero_torque_controller": {
+    #         "gravity_scale": gravity_scale_value,
+    #         "kd": zero_torque_kd_value
+    #     },
+    #     "right_zero_torque_controller": {
+    #         "gravity_scale": gravity_scale_value,
+    #         "kd": zero_torque_kd_value
+    #     }
+    # }
 
     if namespace:
         controllers_file_str = controllers_file_str.replace(
@@ -127,7 +158,7 @@ def robot_nodes_spawner(context: LaunchContext, description_package, description
         executable="ros2_control_node",
         output="both",
         namespace=namespace,
-        parameters=[robot_description_param, controllers_file_str],
+        parameters=[robot_description_param, controllers_file_str, controller_params],
     )
 
     return [robot_state_pub_node, control_node]
@@ -256,6 +287,31 @@ def generate_launch_description():
             choices=["true", "false"],
             description="Whether to auto-command return-to-zero during hardware activation.",
         ),
+        DeclareLaunchArgument(
+            "limit_margin",
+            default_value="0.1",
+            description="Soft limit margin for effort-mode protection (radians).",
+        ),
+        DeclareLaunchArgument(
+            "limit_stop_margin",
+            default_value="0.02",
+            description="Hard stop margin for effort-mode protection (radians).",
+        ),
+        DeclareLaunchArgument(
+            "limit_decel_factor",
+            default_value="0.2",
+            description="Torque scale factor inside the limit margin (0-1).",
+        ),
+        DeclareLaunchArgument(
+            "zero_torque_kd",
+            default_value="0.3",
+            description="Damping gain used by the hardware in effort mode.",
+        ),
+        DeclareLaunchArgument(
+            "gravity_scale",
+            default_value="1.0",
+            description="Gravity compensation scale for zero torque controllers (0-1).",
+        ),
     ]
 
     # Initialize launch configurations
@@ -277,6 +333,11 @@ def generate_launch_description():
     robstride_gripper_type = LaunchConfiguration("robstride_gripper_type")
     auto_return_to_zero_on_activate = LaunchConfiguration(
         "auto_return_to_zero_on_activate")
+    limit_margin = LaunchConfiguration("limit_margin")
+    limit_stop_margin = LaunchConfiguration("limit_stop_margin")
+    limit_decel_factor = LaunchConfiguration("limit_decel_factor")
+    zero_torque_kd = LaunchConfiguration("zero_torque_kd")
+    gravity_scale = LaunchConfiguration("gravity_scale")
 
     controllers_file = PathJoinSubstitution(
         [FindPackageShare(runtime_config_package), "config",
@@ -290,7 +351,9 @@ def generate_launch_description():
               left_can_interface, arm_prefix, motor_backend,
               robstride_master_id, robstride_joint_ids,
               robstride_joint_types, robstride_gripper_id,
-              robstride_gripper_type, auto_return_to_zero_on_activate]
+              robstride_gripper_type, auto_return_to_zero_on_activate,
+              limit_margin, limit_stop_margin, limit_decel_factor,
+              zero_torque_kd, gravity_scale]
     )
 
     rviz_config_file = PathJoinSubstitution(
