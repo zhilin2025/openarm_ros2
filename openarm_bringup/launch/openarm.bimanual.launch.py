@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import os
+import tempfile
 import xacro
 
 from ament_index_python.packages import get_package_share_directory
@@ -34,6 +35,25 @@ def namespace_from_context(context, arm_prefix):
     if arm_prefix_str:
         return arm_prefix_str.strip('/')
     return None
+
+
+def write_zero_torque_param_file(context, gravity_scale, zero_torque_kd):
+    gravity_scale_value = context.perform_substitution(gravity_scale)
+    zero_torque_kd_value = context.perform_substitution(zero_torque_kd)
+    contents = (
+        "left_zero_torque_controller:\n"
+        "  ros__parameters:\n"
+        f"    gravity_scale: {gravity_scale_value}\n"
+        f"    kd: {zero_torque_kd_value}\n"
+        "right_zero_torque_controller:\n"
+        "  ros__parameters:\n"
+        f"    gravity_scale: {gravity_scale_value}\n"
+        f"    kd: {zero_torque_kd_value}\n"
+    )
+    param_path = os.path.join(tempfile.gettempdir(), "openarm_zero_torque_params.yaml")
+    with open(param_path, "w", encoding="utf-8") as handle:
+        handle.write(contents)
+    return param_path
 
 
 def generate_robot_description(context: LaunchContext, description_package, description_file,
@@ -106,7 +126,7 @@ def robot_nodes_spawner(context: LaunchContext, description_package, description
                         robstride_gripper_id, robstride_gripper_type,
                         auto_return_to_zero_on_activate, limit_margin,
                         limit_stop_margin, limit_decel_factor,
-                        zero_torque_kd, gravity_scale):
+                        zero_torque_kd):
     """Spawn both robot state publisher and control nodes with shared robot description."""
     namespace = namespace_from_context(context, arm_prefix)
 
@@ -121,24 +141,6 @@ def robot_nodes_spawner(context: LaunchContext, description_package, description
 
     controllers_file_str = context.perform_substitution(controllers_file)
     robot_description_param = {"robot_description": robot_description}
-    gravity_scale_value = float(context.perform_substitution(gravity_scale))
-    zero_torque_kd_value = float(context.perform_substitution(zero_torque_kd))
-    controller_params = {
-        "left_zero_torque_controller.gravity_scale": gravity_scale_value,
-        "left_zero_torque_controller.kd": zero_torque_kd_value,
-        "right_zero_torque_controller.gravity_scale": gravity_scale_value,
-        "right_zero_torque_controller.kd": zero_torque_kd_value,
-    }
-    # controller_params = {
-    #     "left_zero_torque_controller": {
-    #         "gravity_scale": gravity_scale_value,
-    #         "kd": zero_torque_kd_value
-    #     },
-    #     "right_zero_torque_controller": {
-    #         "gravity_scale": gravity_scale_value,
-    #         "kd": zero_torque_kd_value
-    #     }
-    # }
 
     if namespace:
         controllers_file_str = controllers_file_str.replace(
@@ -158,7 +160,7 @@ def robot_nodes_spawner(context: LaunchContext, description_package, description
         executable="ros2_control_node",
         output="both",
         namespace=namespace,
-        parameters=[robot_description_param, controllers_file_str, controller_params],
+        parameters=[robot_description_param, controllers_file_str],
     )
 
     return [robot_state_pub_node, control_node]
@@ -190,6 +192,28 @@ def controller_spawner(context: LaunchContext, robot_controller, arm_prefix):
     )
 
     return [robot_controller_spawner]
+
+
+def zero_torque_spawner(context: LaunchContext, arm_prefix, gravity_scale, zero_torque_kd):
+    namespace = namespace_from_context(context, arm_prefix)
+    controller_manager_ref = (
+        f"/{namespace}/controller_manager" if namespace else "/controller_manager"
+    )
+    param_file = write_zero_torque_param_file(context, gravity_scale, zero_torque_kd)
+    return [Node(
+        package="controller_manager",
+        executable="spawner",
+        namespace=namespace,
+        arguments=[
+            "left_zero_torque_controller",
+            "right_zero_torque_controller",
+            "-c",
+            controller_manager_ref,
+            "--param-file",
+            param_file,
+            "--inactive",
+        ],
+    )]
 
 
 def generate_launch_description():
@@ -353,7 +377,7 @@ def generate_launch_description():
               robstride_joint_types, robstride_gripper_id,
               robstride_gripper_type, auto_return_to_zero_on_activate,
               limit_margin, limit_stop_margin, limit_decel_factor,
-              zero_torque_kd, gravity_scale]
+              zero_torque_kd]
     )
 
     rviz_config_file = PathJoinSubstitution(
@@ -399,15 +423,8 @@ def generate_launch_description():
     )
 
     zero_torque_controller_spawner = OpaqueFunction(
-        function=lambda context: [Node(
-            package="controller_manager",
-            executable="spawner",
-            namespace=namespace_from_context(context, arm_prefix),
-            arguments=["left_zero_torque_controller",
-                       "right_zero_torque_controller", "-c",
-                       f"/{namespace_from_context(context, arm_prefix)}/controller_manager" if namespace_from_context(context, arm_prefix) else "/controller_manager",
-                       "--inactive"],
-        )]
+        function=zero_torque_spawner,
+        args=[arm_prefix, gravity_scale, zero_torque_kd],
     )
 
     # Timing and sequencing

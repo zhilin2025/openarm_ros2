@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import os
+import tempfile
 import xacro
 
 from ament_index_python.packages import get_package_share_directory
@@ -27,6 +28,21 @@ from launch.substitutions import (
 )
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+
+
+def write_zero_torque_param_file(context, gravity_scale, zero_torque_kd):
+    gravity_scale_value = context.perform_substitution(gravity_scale)
+    zero_torque_kd_value = context.perform_substitution(zero_torque_kd)
+    contents = (
+        "zero_torque_controller:\n"
+        "  ros__parameters:\n"
+        f"    gravity_scale: {gravity_scale_value}\n"
+        f"    kd: {zero_torque_kd_value}\n"
+    )
+    param_path = os.path.join(tempfile.gettempdir(), "openarm_zero_torque_params.yaml")
+    with open(param_path, "w", encoding="utf-8") as handle:
+        handle.write(contents)
+    return param_path
 
 
 ## 将 Xacro 文件转换为 URDF 字符串，是连接 “Xacro 配置” 和 “ROS 2 节点” 的桥梁
@@ -101,7 +117,7 @@ def robot_nodes_spawner(context: LaunchContext, description_package, description
                         robstride_gripper_id, robstride_gripper_type,
                         auto_return_to_zero_on_activate, limit_margin,
                         limit_stop_margin, limit_decel_factor,
-                        zero_torque_kd, gravity_scale):
+                        zero_torque_kd):
     """Spawn both robot state publisher and control nodes with shared robot description."""
 
     # Generate robot description once
@@ -117,12 +133,6 @@ def robot_nodes_spawner(context: LaunchContext, description_package, description
     # Get controllers file path
     controllers_file_str = context.perform_substitution(controllers_file)
     robot_description_param = {"robot_description": robot_description}
-    gravity_scale_value = float(context.perform_substitution(gravity_scale))
-    zero_torque_kd_value = float(context.perform_substitution(zero_torque_kd))
-    controller_params = {
-        "zero_torque_controller.gravity_scale": gravity_scale_value,
-        "zero_torque_controller.kd": zero_torque_kd_value,
-    }
 
     # Robot state publisher node
     robot_state_pub_node = Node(
@@ -140,7 +150,7 @@ def robot_nodes_spawner(context: LaunchContext, description_package, description
         package="controller_manager",
         executable="ros2_control_node",
         output="both",
-        parameters=[robot_description_param, controllers_file_str, controller_params],
+        parameters=[robot_description_param, controllers_file_str],
     )
 
     return [robot_state_pub_node, control_node]
@@ -301,7 +311,7 @@ def generate_launch_description():
               robstride_joint_types, robstride_gripper_id,
               robstride_gripper_type, auto_return_to_zero_on_activate,
               limit_margin, limit_stop_margin, limit_decel_factor,
-              zero_torque_kd, gravity_scale]
+              zero_torque_kd]
     )
     # RViz configuration
     rviz_config_file = PathJoinSubstitution(
@@ -340,10 +350,19 @@ def generate_launch_description():
         arguments=["gripper_controller", "-c", "/controller_manager"],
     )
 
-    zero_torque_controller_spawner = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=["zero_torque_controller", "-c", "/controller_manager", "--inactive"],
+    zero_torque_controller_spawner = OpaqueFunction(
+        function=lambda context: [Node(
+            package="controller_manager",
+            executable="spawner",
+            arguments=[
+                "zero_torque_controller",
+                "-c",
+                "/controller_manager",
+                "--param-file",
+                write_zero_torque_param_file(context, gravity_scale, zero_torque_kd),
+                "--inactive",
+            ],
+        )]
     )
 
     # Timing and sequencing
