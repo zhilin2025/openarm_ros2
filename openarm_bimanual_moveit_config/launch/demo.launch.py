@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import tempfile
 import xacro
 from ament_index_python.packages import (
     get_package_share_directory,
@@ -48,6 +49,10 @@ def generate_robot_description(
     robstride_gripper_id,
     robstride_gripper_type,
     auto_return_to_zero_on_activate,
+    limit_margin,
+    limit_stop_margin,
+    limit_decel_factor,
+    zero_torque_kd,
 ):
     """Render Xacro and return XML string."""
     description_package_str = context.perform_substitution(description_package)
@@ -65,6 +70,10 @@ def generate_robot_description(
     robstride_gripper_type_str = context.perform_substitution(robstride_gripper_type)
     auto_return_to_zero_on_activate_str = context.perform_substitution(
         auto_return_to_zero_on_activate)
+    limit_margin_str = context.perform_substitution(limit_margin)
+    limit_stop_margin_str = context.perform_substitution(limit_stop_margin)
+    limit_decel_factor_str = context.perform_substitution(limit_decel_factor)
+    zero_torque_kd_str = context.perform_substitution(zero_torque_kd)
 
     xacro_path = os.path.join(
         get_package_share_directory(description_package_str),
@@ -89,6 +98,10 @@ def generate_robot_description(
             "robstride_gripper_id": robstride_gripper_id_str,
             "robstride_gripper_type": robstride_gripper_type_str,
             "auto_return_to_zero_on_activate": auto_return_to_zero_on_activate_str,
+            "limit_margin": limit_margin_str,
+            "limit_stop_margin": limit_stop_margin_str,
+            "limit_decel_factor": limit_decel_factor_str,
+            "zero_torque_kd": zero_torque_kd_str,
             # arm_prefix unused inside xacro but kept for completeness
         },
     ).toprettyxml(indent="  ")
@@ -113,6 +126,10 @@ def robot_nodes_spawner(
     robstride_gripper_id,
     robstride_gripper_type,
     auto_return_to_zero_on_activate,
+    limit_margin,
+    limit_stop_margin,
+    limit_decel_factor,
+    zero_torque_kd,
 ):
     robot_description = generate_robot_description(
         context,
@@ -130,6 +147,10 @@ def robot_nodes_spawner(
         robstride_gripper_id,
         robstride_gripper_type,
         auto_return_to_zero_on_activate,
+        limit_margin,
+        limit_stop_margin,
+        limit_decel_factor,
+        zero_torque_kd,
     )
 
     controllers_file_str = context.perform_substitution(controllers_file)
@@ -172,6 +193,25 @@ def controller_spawner(context: LaunchContext, robot_controller):
             arguments=[left, right, "-c", "/controller_manager"],
         )
     ]
+
+
+def write_zero_torque_param_file(context, gravity_scale, zero_torque_kd):
+    gravity_scale_value = context.perform_substitution(gravity_scale)
+    zero_torque_kd_value = context.perform_substitution(zero_torque_kd)
+    contents = (
+        "left_zero_torque_controller:\n"
+        "  ros__parameters:\n"
+        f"    gravity_scale: {gravity_scale_value}\n"
+        f"    kd: {zero_torque_kd_value}\n"
+        "right_zero_torque_controller:\n"
+        "  ros__parameters:\n"
+        f"    gravity_scale: {gravity_scale_value}\n"
+        f"    kd: {zero_torque_kd_value}\n"
+    )
+    param_path = os.path.join(tempfile.gettempdir(), "openarm_zero_torque_params.yaml")
+    with open(param_path, "w", encoding="utf-8") as handle:
+        handle.write(contents)
+    return param_path
 
 
 def generate_launch_description():
@@ -218,6 +258,26 @@ def generate_launch_description():
             choices=["true", "false"],
         ),
         DeclareLaunchArgument(
+            "limit_margin",
+            default_value="0.1",
+        ),
+        DeclareLaunchArgument(
+            "limit_stop_margin",
+            default_value="0.02",
+        ),
+        DeclareLaunchArgument(
+            "limit_decel_factor",
+            default_value="0.2",
+        ),
+        DeclareLaunchArgument(
+            "zero_torque_kd",
+            default_value="0.3",
+        ),
+        DeclareLaunchArgument(
+            "gravity_scale",
+            default_value="1.0",
+        ),
+        DeclareLaunchArgument(
             "controllers_file",
             default_value="openarm_v10_bimanual_controllers.yaml",
         ),
@@ -241,6 +301,11 @@ def generate_launch_description():
     robstride_gripper_type = LaunchConfiguration("robstride_gripper_type")
     auto_return_to_zero_on_activate = LaunchConfiguration(
         "auto_return_to_zero_on_activate")
+    limit_margin = LaunchConfiguration("limit_margin")
+    limit_stop_margin = LaunchConfiguration("limit_stop_margin")
+    limit_decel_factor = LaunchConfiguration("limit_decel_factor")
+    zero_torque_kd = LaunchConfiguration("zero_torque_kd")
+    gravity_scale = LaunchConfiguration("gravity_scale")
 
     controllers_file = PathJoinSubstitution(
         [FindPackageShare(runtime_config_package), "config",
@@ -265,6 +330,10 @@ def generate_launch_description():
             robstride_gripper_id,
             robstride_gripper_type,
             auto_return_to_zero_on_activate,
+            limit_margin,
+            limit_stop_margin,
+            limit_decel_factor,
+            zero_torque_kd,
         ],
     )
 
@@ -285,10 +354,27 @@ def generate_launch_description():
                    "right_gripper_controller", "-c", "/controller_manager"],
     )
 
+    zero_torque_spawner = OpaqueFunction(
+        function=lambda context: [Node(
+            package="controller_manager",
+            executable="spawner",
+            arguments=[
+                "left_zero_torque_controller",
+                "right_zero_torque_controller",
+                "-c",
+                "/controller_manager",
+                "--param-file",
+                write_zero_torque_param_file(context, gravity_scale, zero_torque_kd),
+                "--inactive",
+            ],
+        )]
+    )
+
     delayed_jsb = TimerAction(period=2.0, actions=[jsb_spawner])
     delayed_arm_ctrl = TimerAction(
         period=1.0, actions=[controller_spawner_func])
     delayed_gripper = TimerAction(period=1.0, actions=[gripper_spawner])
+    delayed_zero_torque = TimerAction(period=1.0, actions=[zero_torque_spawner])
 
     moveit_config = MoveItConfigsBuilder(
         "openarm", package_name="openarm_bimanual_moveit_config"
@@ -324,6 +410,7 @@ def generate_launch_description():
             delayed_jsb,
             delayed_arm_ctrl,
             delayed_gripper,
+            delayed_zero_torque,
             run_move_group_node,
             rviz_node,
         ]
