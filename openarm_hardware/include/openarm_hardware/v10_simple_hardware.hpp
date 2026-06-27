@@ -69,7 +69,7 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
       override;
 
     TEMPLATES__ROS2_CONTROL__VISIBILITY_PUBLIC
-    hardware_interface::return_type prepare_command_mode_switch(    // 重写虚函数，当向服务请求模式切换时，controller_manager会调用这个函数（ros2 control框架生命周期管理的方式），硬件接口可以在这里准备切换（如同步状态到命令，打印日志等），但不执行实际切换逻辑。
+    hardware_interface::return_type prepare_command_mode_switch(    // 重写虚函数，当向服务请求模式切换时(在可视化终端那里向controller_manager发出请求)，controller_manager会调用这个函数（ros2 control框架生命周期管理的方式），硬件接口可以在这里准备切换（如同步状态到命令，打印日志等），但不执行实际切换逻辑。
       const std::vector<std::string>& start_interfaces,
       const std::vector<std::string>& stop_interfaces) override;
 

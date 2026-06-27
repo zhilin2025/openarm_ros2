@@ -138,6 +138,8 @@ controller_interface::return_type ZeroTorqueController::update(
     command_interfaces_[i].set_value(gravity_torques[i]);   //command_interfaces_ 是 controller_interface::ControllerInterface 提供的内置 protected 成员变量，用于将计算出的重力力矩写入硬件接口
   }
 
+  // 下面这个发布可以用于调试和可视化，发布当前计算的重力力矩到 ROS 2 主题 "~/gravity_torque"
+  // 比如可以画重力力矩曲线，查看重力力矩是否符合预期
   static int pub_counter = 0;
   if (++pub_counter >= 10 && gravity_pub_) {
     pub_counter = 0;
