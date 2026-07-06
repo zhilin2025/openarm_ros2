@@ -70,6 +70,10 @@ def generate_robot_description(context: LaunchContext, description_package, desc
     description_package_str = context.perform_substitution(description_package)
     description_file_str = context.perform_substitution(description_file)
     arm_type_str = context.perform_substitution(arm_type)
+
+    if arm_type_str == "v11" and description_file_str == "v10.urdf.xacro":
+        description_file_str = "v11.urdf.xacro"
+
     use_fake_hardware_str = context.perform_substitution(use_fake_hardware)
     right_can_interface_str = context.perform_substitution(right_can_interface)
     left_can_interface_str = context.perform_substitution(left_can_interface)

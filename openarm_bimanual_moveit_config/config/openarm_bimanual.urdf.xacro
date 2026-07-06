@@ -15,11 +15,14 @@
 　limitations under the License.
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="openarm_bimanual">
+    <xacro:arg name="arm_type" default="v10" />
     <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
     <xacro:arg name="hardware_type" default="real" />
 
+    <xacro:property name="arm_type" value="$(arg arm_type)" />
+
     <!-- Import openarm_bimanual urdf file -->
-    <xacro:include filename="$(find openarm_description)/urdf/robot/v10.urdf.xacro" />
+    <xacro:include filename="$(find openarm_description)/urdf/robot/${arm_type}.urdf.xacro" />
 
     <link name="base_link"/>
     <joint name="world_to_pedestal" type="fixed">

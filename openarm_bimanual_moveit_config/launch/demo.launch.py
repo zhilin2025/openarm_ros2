@@ -58,6 +58,10 @@ def generate_robot_description(
     description_package_str = context.perform_substitution(description_package)
     description_file_str = context.perform_substitution(description_file)
     arm_type_str = context.perform_substitution(arm_type)
+
+    if arm_type_str == "v11" and description_file_str == "v10.urdf.xacro":
+        description_file_str = "v11.urdf.xacro"
+
     use_fake_hardware_str = context.perform_substitution(use_fake_hardware)
     right_can_interface_str = context.perform_substitution(right_can_interface)
     left_can_interface_str = context.perform_substitution(left_can_interface)
@@ -212,6 +216,79 @@ def write_zero_torque_param_file(context, gravity_scale, zero_torque_kd):
     with open(param_path, "w", encoding="utf-8") as handle:
         handle.write(contents)
     return param_path
+
+def moveit_nodes_spawner(
+    context: LaunchContext,
+    description_package,
+    description_file,
+    arm_type,
+    use_fake_hardware,
+    right_can_interface,
+    left_can_interface,
+    arm_prefix,
+    motor_backend,
+    robstride_master_id,
+    robstride_joint_ids,
+    robstride_joint_types,
+    robstride_gripper_id,
+    robstride_gripper_type,
+    auto_return_to_zero_on_activate,
+    limit_margin,
+    limit_stop_margin,
+    limit_decel_factor,
+    zero_torque_kd,
+):
+    robot_description = generate_robot_description(
+        context,
+        description_package,
+        description_file,
+        arm_type,
+        use_fake_hardware,
+        right_can_interface,
+        left_can_interface,
+        arm_prefix,
+        motor_backend,
+        robstride_master_id,
+        robstride_joint_ids,
+        robstride_joint_types,
+        robstride_gripper_id,
+        robstride_gripper_type,
+        auto_return_to_zero_on_activate,
+        limit_margin,
+        limit_stop_margin,
+        limit_decel_factor,
+        zero_torque_kd,
+    )
+
+    moveit_config = MoveItConfigsBuilder(
+        "openarm", package_name="openarm_bimanual_moveit_config"
+    ).to_moveit_configs()
+    moveit_params = moveit_config.to_dict()
+    moveit_params["robot_description"] = robot_description
+
+    run_move_group_node = Node(
+        package="moveit_ros_move_group",
+        executable="move_group",
+        output="screen",
+        parameters=[moveit_params],
+    )
+
+    rviz_cfg = os.path.join(
+        get_package_share_directory("openarm_bimanual_moveit_config"),
+        "config",
+        "moveit.rviz",
+    )
+
+    rviz_node = Node(
+        package="rviz2",
+        executable="rviz2",
+        name="rviz2",
+        output="log",
+        arguments=["-d", rviz_cfg],
+        parameters=[moveit_params],
+    )
+
+    return [run_move_group_node, rviz_node]
 
 
 def generate_launch_description():
@@ -376,31 +453,28 @@ def generate_launch_description():
     delayed_gripper = TimerAction(period=1.0, actions=[gripper_spawner])
     delayed_zero_torque = TimerAction(period=1.0, actions=[zero_torque_spawner])
 
-    moveit_config = MoveItConfigsBuilder(
-        "openarm", package_name="openarm_bimanual_moveit_config"
-    ).to_moveit_configs()
-
-    moveit_params = moveit_config.to_dict()
-
-    run_move_group_node = Node(
-        package="moveit_ros_move_group",
-        executable="move_group",
-        output="screen",
-        parameters=[moveit_params],
-    )
-
-    rviz_cfg = os.path.join(
-        get_package_share_directory(
-            "openarm_bimanual_moveit_config"), "config", "moveit.rviz"
-    )
-
-    rviz_node = Node(
-        package="rviz2",
-        executable="rviz2",
-        name="rviz2",
-        output="log",
-        arguments=["-d", rviz_cfg],
-        parameters=[moveit_params],
+    moveit_nodes_spawner_func = OpaqueFunction(
+        function=moveit_nodes_spawner,
+        args=[
+            description_package,
+            description_file,
+            arm_type,
+            use_fake_hardware,
+            right_can_interface,
+            left_can_interface,
+            arm_prefix,
+            motor_backend,
+            robstride_master_id,
+            robstride_joint_ids,
+            robstride_joint_types,
+            robstride_gripper_id,
+            robstride_gripper_type,
+            auto_return_to_zero_on_activate,
+            limit_margin,
+            limit_stop_margin,
+            limit_decel_factor,
+            zero_torque_kd,
+        ],
     )
 
     return LaunchDescription(
@@ -411,7 +485,6 @@ def generate_launch_description():
             delayed_arm_ctrl,
             delayed_gripper,
             delayed_zero_torque,
-            run_move_group_node,
-            rviz_node,
+            moveit_nodes_spawner_func,
         ]
     )

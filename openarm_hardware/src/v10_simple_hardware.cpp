@@ -109,6 +109,11 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
   it = info.hardware_parameters.find("arm_prefix");
   arm_prefix_ = (it != info.hardware_parameters.end()) ? it->second : "";
 
+  // Parse arm type to select version-specific limit tables.
+  it = info.hardware_parameters.find("arm_type");
+  arm_type_ = (it != info.hardware_parameters.end()) ? it->second : "v10";
+  std::transform(arm_type_.begin(), arm_type_.end(), arm_type_.begin(), ::tolower);
+
   // Parse motor backend
   it = info.hardware_parameters.find("motor_backend");
   motor_backend_str_ =
@@ -297,6 +302,33 @@ void OpenArm_v10HW::generate_joint_names() {
 
 std::array<std::array<double, 2>, OpenArm_v10HW::ARM_DOF>
 OpenArm_v10HW::compute_arm_limits() const {
+  if (arm_type_ == "v11") {
+    std::array<std::array<double, 2>, ARM_DOF> limits = {{
+        {{-1.65, 3.21}},   // joint1
+        {{-2.89, 0.36}},   // joint2
+        {{-3.0, 0.13}},    // joint3
+        {{-0.28, 1.63}},   // joint4
+        {{-2.72, -0.14}},  // joint5
+        {{-0.52, 0.52}},   // joint6
+        {{-1.29, 1.29}}    // joint7
+    }};
+
+    if (arm_prefix_.find("right_") != std::string::npos) {
+      limits[0][0] = -3.23;
+      limits[0][1] = 1.63;
+      limits[1][0] = -0.35;
+      limits[1][1] = 2.89;
+      limits[2][0] = -3.12;
+      limits[2][1] = 0.0;
+      limits[3][0] = -0.24;
+      limits[3][1] = 1.68;
+      limits[4][0] = -2.7;
+      limits[4][1] = -0.12;
+    }
+
+    return limits;
+  }
+
   std::array<std::array<double, 2>, ARM_DOF> limits = {{
       {{-1.396263, 3.490659}},  // joint1
       {{-1.745329, 1.745329}},  // joint2

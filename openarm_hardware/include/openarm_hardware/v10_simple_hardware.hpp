@@ -153,6 +153,7 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   // Configuration
   std::string can_interface_;
   std::string arm_prefix_;
+  std::string arm_type_;
     std::string motor_backend_str_;
     MotorBackend motor_backend_ = MotorBackend::kDamiao;
   bool hand_;
