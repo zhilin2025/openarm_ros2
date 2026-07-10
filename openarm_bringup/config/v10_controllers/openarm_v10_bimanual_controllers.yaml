@@ -106,6 +106,20 @@ left_joint_trajectory_controller:
     constraints:
       stopped_velocity_tolerance: 0.01 # Defaults to 0.01
       goal_time: 0.0 # Defaults to 0.0 (start immediately)
+      openarm_left_joint1:
+        goal: 0.02
+      openarm_left_joint2:
+        goal: 0.02
+      openarm_left_joint3:
+        goal: 0.02
+      openarm_left_joint4:
+        goal: 0.02
+      openarm_left_joint5:
+        goal: 0.02
+      openarm_left_joint6:
+        goal: 0.02
+      openarm_left_joint7:
+        goal: 0.02
 
 left_gripper_controller:
   ros__parameters:
@@ -171,6 +185,20 @@ right_joint_trajectory_controller:
     constraints:
       stopped_velocity_tolerance: 0.01 # Defaults to 0.01
       goal_time: 0.0 # Defaults to 0.0 (start immediately)
+      openarm_right_joint1:
+        goal: 0.02
+      openarm_right_joint2:
+        goal: 0.02
+      openarm_right_joint3:
+        goal: 0.02
+      openarm_right_joint4:
+        goal: 0.02
+      openarm_right_joint5:
+        goal: 0.02
+      openarm_right_joint6:
+        goal: 0.02
+      openarm_right_joint7:
+        goal: 0.02
 
 right_gripper_controller:
   ros__parameters:

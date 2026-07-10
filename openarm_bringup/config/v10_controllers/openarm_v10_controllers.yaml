@@ -97,6 +97,20 @@ joint_trajectory_controller:
     constraints:
       stopped_velocity_tolerance: 0.01 # Defaults to 0.01
       goal_time: 0.0 # Defaults to 0.0 (start immediately)
+      openarm_joint1:
+        goal: 0.01
+      openarm_joint2:
+        goal: 0.01
+      openarm_joint3:
+        goal: 0.01
+      openarm_joint4:
+        goal: 0.01
+      openarm_joint5:
+        goal: 0.01
+      openarm_joint6:
+        goal: 0.01
+      openarm_joint7:
+        goal: 0.01
 
 
 gripper_controller:
