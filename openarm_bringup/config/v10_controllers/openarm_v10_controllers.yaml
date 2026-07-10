@@ -96,21 +96,14 @@ joint_trajectory_controller:
     allow_partial_joints_goal: false # Defaults to false
     constraints:
       stopped_velocity_tolerance: 0.01 # Defaults to 0.01
-      goal_time: 0.0 # Defaults to 0.0 (start immediately)
-      openarm_joint1:
-        goal: 0.01
-      openarm_joint2:
-        goal: 0.01
-      openarm_joint3:
-        goal: 0.01
-      openarm_joint4:
-        goal: 0.01
-      openarm_joint5:
-        goal: 0.01
-      openarm_joint6:
-        goal: 0.01
-      openarm_joint7:
-        goal: 0.01
+      goal_time: 2.0                    # Allow 2s settling time after trajectory ends
+      openarm_joint1: {goal: 0.15, trajectory: 0.15}  # Load-bearing joint; needs extra margin
+      openarm_joint2: {goal: 0.1, trajectory: 0.1}
+      openarm_joint3: {goal: 0.1, trajectory: 0.1}
+      openarm_joint4: {goal: 0.1, trajectory: 0.1}
+      openarm_joint5: {goal: 0.1, trajectory: 0.1}
+      openarm_joint6: {goal: 0.1, trajectory: 0.1}
+      openarm_joint7: {goal: 0.1, trajectory: 0.1}
 
 
 gripper_controller:

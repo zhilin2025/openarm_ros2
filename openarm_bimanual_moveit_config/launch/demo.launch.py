@@ -260,11 +260,24 @@ def moveit_nodes_spawner(
         zero_torque_kd,
     )
 
+    # MoveItConfigsBuilder会自动家在config文件夹下的所有yaml文件，并将其转换为MoveIt配置参数字典。
     moveit_config = MoveItConfigsBuilder(
         "openarm", package_name="openarm_bimanual_moveit_config"
     ).to_moveit_configs()
     moveit_params = moveit_config.to_dict()
     moveit_params["robot_description"] = robot_description
+
+    # Extend execution monitoring timeout to prevent move_group from
+    # preempting trajectories on real hardware.  Default scaling is 2.0,
+    # which is too tight when velocity_scaling_factor=0.1 (in config/joint_limits.yaml) and motor PID
+    # response adds further delay.
+    #
+    # See: https://moveit.picknik.ai/humble/api/html/classplan__execution_1_1PlanExecution.html
+    moveit_params["trajectory_execution"] = {
+        "execution_duration_monitoring": True,
+        "allowed_execution_duration_scaling": 10.0,  # default: 2.0
+        "allowed_goal_duration_margin": 2.0,          # default: 0.5
+    }
 
     run_move_group_node = Node(
         package="moveit_ros_move_group",

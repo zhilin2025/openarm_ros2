@@ -105,21 +105,21 @@ left_joint_trajectory_controller:
     allow_partial_joints_goal: false # Defaults to false
     constraints:
       stopped_velocity_tolerance: 0.01 # Defaults to 0.01
-      goal_time: 0.0 # Defaults to 0.0 (start immediately)
+      goal_time: 2.0 # 轨迹规划结束后，允许控制器继续调整并达到目标点的额外时间（Grace Period，宽限时间）
       openarm_left_joint1:
-        goal: 0.02
+        goal: 0.1
       openarm_left_joint2:
-        goal: 0.02
+        goal: 0.1
       openarm_left_joint3:
-        goal: 0.02
+        goal: 0.1
       openarm_left_joint4:
-        goal: 0.02
+        goal: 0.1
       openarm_left_joint5:
-        goal: 0.02
+        goal: 0.1
       openarm_left_joint6:
-        goal: 0.02
+        goal: 0.1
       openarm_left_joint7:
-        goal: 0.02
+        goal: 0.1
 
 left_gripper_controller:
   ros__parameters:
@@ -184,21 +184,21 @@ right_joint_trajectory_controller:
     allow_partial_joints_goal: false # Defaults to false
     constraints:
       stopped_velocity_tolerance: 0.01 # Defaults to 0.01
-      goal_time: 0.0 # Defaults to 0.0 (start immediately)
+      goal_time: 1.0 # Defaults to 0.0 (start immediately)
       openarm_right_joint1:
-        goal: 0.02
+        goal: 0.1
       openarm_right_joint2:
-        goal: 0.02
+        goal: 0.1
       openarm_right_joint3:
-        goal: 0.02
+        goal: 0.1
       openarm_right_joint4:
-        goal: 0.02
+        goal: 0.1
       openarm_right_joint5:
-        goal: 0.02
+        goal: 0.1
       openarm_right_joint6:
-        goal: 0.02
+        goal: 0.1
       openarm_right_joint7:
-        goal: 0.02
+        goal: 0.1
 
 right_gripper_controller:
   ros__parameters:

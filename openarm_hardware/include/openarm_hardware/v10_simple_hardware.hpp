@@ -134,8 +134,8 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
     int robstride_gripper_type_ = 0;
 
   // Gains kp_ 决定「关节有多快能到达目标位置」，kd_ 决定「关节到达目标位置时有多稳」
-  std::vector<double> kp_ = {70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0};
-  std::vector<double> kd_ = {2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5};
+  std::vector<double> kp_ = {85.0, 85.0, 70.0, 70.0, 10.0, 10.0, 10.0};
+  std::vector<double> kd_ = {3.0, 3.0, 2.0, 2.0, 0.7, 0.6, 0.5};
 
   std::atomic<bool> effort_mode_{false};
   double zero_torque_kd_{0.3};

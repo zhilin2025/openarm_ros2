@@ -66,14 +66,14 @@
     allow_integration_in_goal_trajectories: true
     constraints:
       stopped_velocity_tolerance: 0.01
-      goal_time: 0.6
-      openarm_left_joint1: {trajectory: 0.1, goal: 0.1}
-      openarm_left_joint2: {trajectory: 0.1, goal: 0.1}
-      openarm_left_joint3: {trajectory: 0.1, goal: 0.1}
-      openarm_left_joint4: {trajectory: 0.1, goal: 0.1}
-      openarm_left_joint5: {trajectory: 0.1, goal: 0.1}
-      openarm_left_joint6: {trajectory: 0.1, goal: 0.1}
-      openarm_left_joint7: {trajectory: 0.1, goal: 0.1}
+      goal_time: 2.0                    # Allow 2s settling time after trajectory ends
+      openarm_left_joint1: {goal: 0.15, trajectory: 0.15}  # Load-bearing joint; needs extra margin
+      openarm_left_joint2: {goal: 0.1, trajectory: 0.1}
+      openarm_left_joint3: {goal: 0.1, trajectory: 0.1}
+      openarm_left_joint4: {goal: 0.1, trajectory: 0.1}
+      openarm_left_joint5: {goal: 0.1, trajectory: 0.1}
+      openarm_left_joint6: {goal: 0.1, trajectory: 0.1}
+      openarm_left_joint7: {goal: 0.1, trajectory: 0.1}
 
 /**/right_joint_trajectory_controller:
   ros__parameters:
@@ -98,14 +98,14 @@
     allow_integration_in_goal_trajectories: true
     constraints:
       stopped_velocity_tolerance: 0.01
-      goal_time: 0.6
-      openarm_right_joint1: {trajectory: 0.1, goal: 0.1}
-      openarm_right_joint2: {trajectory: 0.1, goal: 0.1}
-      openarm_right_joint3: {trajectory: 0.1, goal: 0.1}
-      openarm_right_joint4: {trajectory: 0.1, goal: 0.1}
-      openarm_right_joint5: {trajectory: 0.1, goal: 0.1}
-      openarm_right_joint6: {trajectory: 0.1, goal: 0.1}
-      openarm_right_joint7: {trajectory: 0.1, goal: 0.1}
+      goal_time: 2.0                    # Allow 2s settling time after trajectory ends
+      openarm_right_joint1: {goal: 0.15, trajectory: 0.15}  # Load-bearing joint; needs extra margin near limits
+      openarm_right_joint2: {goal: 0.1, trajectory: 0.1}  # goal的含义：轨迹结束以后，允许该关节距离目标点还有 ±0.15 rad 的误差。
+      openarm_right_joint3: {goal: 0.1, trajectory: 0.1}  # trajectory的含义：整个运动过程中，机器人都不能偏离当前轨迹参考值超过0.15rad。
+      openarm_right_joint4: {goal: 0.1, trajectory: 0.1}  # 由于电机响应有延迟或者控制周期有抖动或者CAN总线有延迟或者MoveIt默认时间参数有时候比较激进的时候会导致某个轨迹时间点机械臂的实际位置没跟上规划的轨迹点，就会报Trajectory tolerance violated的错误。
+      openarm_right_joint5: {goal: 0.1, trajectory: 0.1}  # 因此性能一般的机械臂一般只配置goal的误差，允许运行轨迹跟随比较宽松，等以后系统控制性能稳定且需要轨迹完全跟随的时候再配置trajectory的误差。
+      openarm_right_joint6: {goal: 0.1, trajectory: 0.1}
+      openarm_right_joint7: {goal: 0.1, trajectory: 0.1}
 
 /**/left_forward_position_controller:
   ros__parameters:
