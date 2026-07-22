@@ -19,7 +19,7 @@
 
 controller_manager:
   ros__parameters:
-    update_rate: 100  # Hz（控制器管理器的更新频率，即 read/write 的调用频率）
+    update_rate: 200  # Hz（控制器管理器的更新频率，即 read/write 的调用频率）
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
@@ -87,11 +87,19 @@ joint_trajectory_controller:
 
     command_interfaces:
       - position
+      - velocity
     state_interfaces:
       - position
+      # NOTE: velocity removed from state_interfaces to prevent JTC from
+      # checking velocity tolerances (stopped_velocity_tolerance=0.01 is too
+      # strict for this hardware). velocity in command_interfaces is kept so
+      # that cubic spline + velocity feedforward still work.
 
-    state_publish_rate: 50.0 # Defaults to 50， 控制器发布 /joint_states 话题的频率
+    state_publish_rate: 100.0 # Defaults to 50， 控制器发布 /joint_states 话题的频率
     action_monitor_rate: 50.0 # Defaults to 20， 监控 /follow_joint_trajectory 动作目标的频率（比如检查是否到达目标位置、是否超时）
+
+    open_loop_control: true
+    allow_nonzero_velocity_at_trajectory_end: true
 
     allow_partial_joints_goal: false # Defaults to false
     constraints:

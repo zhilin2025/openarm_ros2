@@ -15,7 +15,7 @@
 
 controller_manager:
   ros__parameters:
-    update_rate: 100  # Hz
+    update_rate: 200  # Hz
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
@@ -93,14 +93,22 @@ left_joint_trajectory_controller:
       - openarm_left_joint5
       - openarm_left_joint6
       - openarm_left_joint7
-    interface_name: position
+
     command_interfaces:
       - position
+      - velocity
     state_interfaces:
       - position
+      # NOTE: velocity removed from state_interfaces to prevent JTC from
+      # checking velocity tolerances (stopped_velocity_tolerance=0.01 is too
+      # strict for this hardware). velocity in command_interfaces is kept so
+      # that cubic spline + velocity feedforward still work.
 
-    state_publish_rate: 50.0 # Defaults to 50
+    state_publish_rate: 100.0 # Defaults to 50
     action_monitor_rate: 50.0 # Defaults to 20
+
+    open_loop_control: true
+    allow_nonzero_velocity_at_trajectory_end: true
 
     allow_partial_joints_goal: false # Defaults to false
     constraints:
@@ -172,14 +180,19 @@ right_joint_trajectory_controller:
       - openarm_right_joint5
       - openarm_right_joint6
       - openarm_right_joint7
-    interface_name: position
+
     command_interfaces:
       - position
+      - velocity
     state_interfaces:
       - position
+      # NOTE: velocity removed from state_interfaces (same reason as left arm).
 
-    state_publish_rate: 50.0 # Defaults to 50
+    state_publish_rate: 100.0 # Defaults to 50
     action_monitor_rate: 50.0 # Defaults to 20
+
+    open_loop_control: true
+    allow_nonzero_velocity_at_trajectory_end: true
 
     allow_partial_joints_goal: false # Defaults to false
     constraints:
