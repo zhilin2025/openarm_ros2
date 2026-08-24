@@ -36,7 +36,7 @@ def export(checkpoint: str, output: str, state_dim: int, action_dim: int, hidden
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
     out_path = Path(output)
-    out_path.parent.mkdir(parents=True, exist_ok=True)n/jgzh_sim2
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 1. 创建与训练时相同结构的网络并加载权重
     device = torch.device("cpu")

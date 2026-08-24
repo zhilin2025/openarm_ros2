@@ -1,0 +1,2 @@
+功能包使用：
+ros2 launch openarm_bimanual_moveit_config demo.launch.py use_fake_hardware:=false motor_backend:=robstride right_can_interface:=can0 left_can_interface:=can1 robstride_master_id:=253 robstride_joint_ids:=1,2,3,4,5,6,7 robstride_joint_types:=3,3,6,6,0,0,0 robstride_gripper_id:=8 robstride_gripper_type:=0 gravity_scale:=0.0 zero_torque_kd:=0.2 arm_type:=v11

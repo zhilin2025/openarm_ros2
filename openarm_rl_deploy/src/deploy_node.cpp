@@ -1,7 +1,9 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -13,69 +15,50 @@
 #include <torch/script.h>  // LibTorch
 #include <torch/torch.h>
 
-#include <moveit/move_group_interface/move_group_interface.h>
-#include <moveit/planning_scene_interface/planning_scene_interface.h>
-
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/executors/multi_threaded_executor.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
+#include "ament_index_cpp/get_package_share_directory.hpp"
+
 #include "sensor_msgs/msg/joint_state.hpp"
-#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "geometry_msgs/msg/pose_array.hpp"
+#include "geometry_msgs/msg/point_stamped.hpp"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "tf2_ros/buffer.h"
+#include "tf2_ros/transform_listener.h"
 #include "trajectory_msgs/msg/joint_trajectory.hpp"
 #include "trajectory_msgs/msg/joint_trajectory_point.hpp"
-#include "std_msgs/msg/float64_multi_array.hpp"
+#include "control_msgs/action/follow_joint_trajectory.hpp"
+#include "control_msgs/action/gripper_command.hpp"
 #include "std_srvs/srv/trigger.hpp"
 
+#include "openarmx_deploy/arm_kinematics.h"
 #include "openarmx_deploy/grasp_state_machine.h"
 #include "openarmx_deploy/observation_builder.h"
 
 namespace openarmx_deploy {
 
-// ============================================================================
-// 机器人配置 — 各型号的关节名、夹爪参数
-// ============================================================================
-struct RobotConfig {
-  std::vector<std::string> arm_joint_names;
-  std::vector<std::string> gripper_joint_names;
-  double gripper_open;
-  double gripper_close;
-};
-
-static const RobotConfig kRobotConfigs[] = {
-  // JGZH — 7-DOF 臂 + 2 指 prismatic gripper
-  {
-    {"JGZH_joint1", "JGZH_joint2", "JGZH_joint3", "JGZH_joint4",
-     "JGZH_joint5", "JGZH_joint6", "JGZH_joint7"},
-    {"JGZH_left_finger_joint", "JGZH_right_finger_joint"},
-    0.01, -0.018
-  },
-  // OpenArmX — 7-DOF 臂 + 2 指 prismatic gripper
-  {
-    {"shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
-     "wrist_1_joint", "wrist_2_joint", "wrist_3_joint", "wrist_4_joint"},
-    {"left_finger_joint", "right_finger_joint"},
-    0.044, 0.0
-  },
-  // Sciurus17 — 7-DOF 臂 + 2 指 revolute gripper
-  {
-    {"sciurus17_joint1", "sciurus17_joint2", "sciurus17_joint3",
-     "sciurus17_joint4", "sciurus17_joint5", "sciurus17_joint6",
-     "sciurus17_joint7"},
-    {"sciurus17_left_finger_joint", "sciurus17_right_finger_joint"},
-    1.5, 0.0
-  },
-};
+using FollowJointTrajectory = control_msgs::action::FollowJointTrajectory;
+using GripperCommand = control_msgs::action::GripperCommand;
+using GoalHandleFollowJointTrajectory =
+    rclcpp_action::ClientGoalHandle<FollowJointTrajectory>;
 
 // ============================================================================
-// OpenArmXDeployNode — 策略部署 ROS2 节点
+// OpenArmXDeployNode — RL 抓取策略部署节点
+//
+// 订阅 /yolo_detection/object_poses (PoseArray) 获取物体位置，订阅
+// /joint_states 获取关节角，通过 ros2_control 的 Action 接口下发轨迹/夹爪
+// 命令（与 GUI openarm_visual_controller.py 使用的控制器一致）。
 // ============================================================================
 class OpenArmXDeployNode : public rclcpp::Node {
  public:
   OpenArmXDeployNode();
+  ~OpenArmXDeployNode() override;
 
  private:
   // ---- ROS 回调 ----
   void onJointState(const sensor_msgs::msg::JointState::SharedPtr msg);
-  void onObjectPose(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
+  void onObjectPoses(const geometry_msgs::msg::PoseArray::SharedPtr msg);
 
   // ---- 服务 ----
   void handleGrasp(
@@ -92,29 +75,32 @@ class OpenArmXDeployNode : public rclcpp::Node {
   void executeAction(const std::vector<float>& action);
 
   // ---- 辅助 ----
-  std::array<double, 3> getCurrentTCP();   // 占位 — 实际需通过 TF/FK
-  std::vector<double> solveIK(const std::array<double, 3>& target_pos,
-                              const std::array<double, 9>& target_xmat,
-                              const std::vector<double>& initial_q);
-  void publishJointTrajectory(const std::vector<double>& q);
-  void publishGripperCommand(double position);
+  std::array<double, 3> getCurrentTCP();   // 由 FK 计算真实 TCP 位置
+  bool solveIK(const std::array<double, 3>& target_pos,
+               const std::vector<double>& initial_q,
+               std::vector<double>& out_q);
+  void sendArmGoal(const std::vector<double>& start_q,
+                   const std::vector<double>& target_q);
+  void sendGripperGoal(double position);
+  std::vector<double> currentArmQ();       // 线程安全地读取当前臂关节角
 
   // ---- 回初始位姿 ----
-  void moveToHome();                    // 发布回初始位姿轨迹并等待到位
-  bool waitForHome(double timeout_s);   // 轮询 /joint_states 检查是否到位
-  bool planAndExecuteWithMoveIt(const std::vector<double>& target_q);  // MoveIt2 避障规划+执行
-  void interpolateToHome();             // 降级方案: 关节空间线性插值 (无避障)
+  void moveToHome();
+  bool waitForHome(double timeout_s);
+  void interpolateToHome();
 
   // ---- 参数 ----
   void loadParameters();
 
   // ---- ROS 接口 ----
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_sub_;
-  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr object_sub_;
-  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr traj_pub_;
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr gripper_pub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr object_sub_;
+  rclcpp_action::Client<FollowJointTrajectory>::SharedPtr traj_client_;
+  rclcpp_action::Client<GripperCommand>::SharedPtr gripper_client_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr grasp_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_srv_;
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
   // ---- 模型 ----
   torch::jit::script::Module actor_;
@@ -124,43 +110,55 @@ class OpenArmXDeployNode : public rclcpp::Node {
   std::map<std::string, double> arm_qpos_;
   std::map<std::string, double> gripper_qpos_;
   double object_x_ = 0.0, object_y_ = 0.0, object_z_ = 0.0;
-  bool joints_received_ = false;
-  bool object_received_ = false;
+  std::atomic_bool joints_received_{false};
+  std::atomic_bool object_received_{false};
+  rclcpp::Time object_stamp_{0, 0, RCL_ROS_TIME};
 
   // ---- 状态机 & 控制 ----
   ObservationBuilder obs_builder_;
   std::unique_ptr<GraspStateMachine> state_machine_;
   int step_count_ = 0;
-  bool grasp_active_ = false;
+  std::atomic_bool grasp_active_{false};
+  std::atomic_bool arm_goal_active_{false};
+  std::atomic_uint64_t arm_goal_id_{0};
   bool grasp_success_ = false;
-  std::thread grasp_thread_;            // 抓取循环线程句柄 (复位时等待退出)
+  std::thread grasp_thread_;
   bool grasp_thread_running_ = false;
 
   // ---- 初始位姿 (Home) ----
-  std::vector<double> home_qpos_;       // 目标初始关节角
-  bool home_recorded_ = false;          // 已记录/指定初始位姿
-  std::vector<double> home_pose_param_; // 参数指定的固定初始位姿 (空=启动时记录)
-  double home_tolerance_ = 0.02;        // 到位容差 (rad)
-  double home_timeout_ = 30.0;          // 回位超时 (s)
-  int home_interp_steps_ = 50;          // 回位轨迹插值步数
+  std::vector<double> home_qpos_;
+  bool home_recorded_ = false;
+  std::vector<double> home_pose_param_;
+  double home_tolerance_ = 0.02;
+  double home_timeout_ = 30.0;
+  int home_interp_steps_ = 50;
 
-  // ---- MoveIt2 ----
-  std::string move_group_name_ = "arm"; // MoveIt 规划组名 (需匹配 moveit 配置)
-  bool use_moveit_ = true;              // 回位是否使用 MoveIt2 避障规划
-  double moveit_velocity_scale_ = 0.3;  // 回位速度缩放
-  double moveit_acceleration_scale_ = 0.3;  // 回位加速度缩放
+  // ---- 运动学 ----
+  std::unique_ptr<ArmKinematics> kin_;
 
   // ---- 参数 ----
-  int robot_index_ = 0;            // 0=JGZH, 1=OpenArmX, 2=Sciurus17
+  std::string arm_side_ = "right";
+  std::vector<std::string> arm_joint_names_;
+  std::string gripper_joint_name_;
+  double gripper_open_ = 0.042;    // 真实夹爪 openarm_*_finger_joint1 上限
+  double gripper_close_ = 0.0;     // 下限
+  std::string object_pose_topic_ = "/yolo_detection/object_poses";
+  std::string base_frame_ = "openarm_body_link0";
+  double object_timeout_ = 1.0;
   std::string model_path_;
   int max_steps_ = 400;
   double action_pos_scale_ = 0.03;
   double action_gripper_scale_ = 0.005;
   double control_rate_ = 30.0;
+  double max_joint_velocity_ = 0.50;
+  double min_arm_goal_duration_ = 0.25;
+  double gripper_goal_epsilon_ = 0.0005;
+  double last_gripper_goal_ = std::numeric_limits<double>::quiet_NaN();
   double approach_height_ = 0.15;
   double grasp_height_offset_ = 0.008;
   double lift_height_ = 0.12;
   double grasp_yaw_ = 0.0;
+  double table_z_ = 0.80;
   int close_steps_ = 30;
   int settle_steps_ = 20;
   int lift_steps_ = 40;
@@ -171,18 +169,27 @@ class OpenArmXDeployNode : public rclcpp::Node {
 // --------------------------------------------------------------------------
 OpenArmXDeployNode::OpenArmXDeployNode()
     : Node("openarmx_deploy") {
-
   loadParameters();
 
+  kin_ = std::make_unique<ArmKinematics>(
+      arm_side_ == "left" ? ArmKinematics::Side::kLeft : ArmKinematics::Side::kRight);
+
+  tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
   // ---- 加载 TorchScript 模型 ----
-  try {
-    actor_ = torch::jit::load(model_path_);
-    RCLCPP_INFO(get_logger(), "Loaded TorchScript model: %s", model_path_.c_str());
-  } catch (const c10::Error& e) {
-    RCLCPP_FATAL(get_logger(), "Failed to load model: %s", e.what());
-    throw;
+  if (model_path_.empty()) {
+    throw std::runtime_error("Parameter 'checkpoint' must not be empty");
+  } else {
+    try {
+      actor_ = torch::jit::load(model_path_);
+      actor_.eval();
+      RCLCPP_INFO(get_logger(), "Loaded TorchScript model: %s", model_path_.c_str());
+    } catch (const c10::Error& e) {
+      RCLCPP_FATAL(get_logger(), "Failed to load model: %s", e.what());
+      throw;
+    }
   }
-  actor_.eval();
 
   // 验证模型: 跑一次 dummy 推理
   {
@@ -190,28 +197,29 @@ OpenArmXDeployNode::OpenArmXDeployNode()
     std::vector<torch::jit::IValue> inputs;
     inputs.push_back(dummy);
     auto output = actor_.forward(inputs).toTensor();
+    if (output.dim() != 2 || output.size(0) != 1 || output.size(1) != 4) {
+      throw std::runtime_error("Policy output must have shape [1, 4]");
+    }
     RCLCPP_INFO(get_logger(), "Model test inference: output shape [%ld, %ld]",
                 output.size(0), output.size(1));
   }
 
-  const auto& cfg = kRobotConfigs[robot_index_];
-  RCLCPP_INFO(get_logger(), "Robot: %zu arm joints, %zu gripper joints",
-              cfg.arm_joint_names.size(), cfg.gripper_joint_names.size());
-  RCLCPP_INFO(get_logger(), "Observation dim: %d", ObservationBuilder::kObservationDim);
+  RCLCPP_INFO(get_logger(), "Arm side: %s, %zu arm joints, gripper '%s'",
+              arm_side_.c_str(), arm_joint_names_.size(), gripper_joint_name_.c_str());
 
   // ---- 订阅 ----
   joint_sub_ = create_subscription<sensor_msgs::msg::JointState>(
       "/joint_states", 10,
       std::bind(&OpenArmXDeployNode::onJointState, this, std::placeholders::_1));
-  object_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
-      "/object_pose", 10,
-      std::bind(&OpenArmXDeployNode::onObjectPose, this, std::placeholders::_1));
+  object_sub_ = create_subscription<geometry_msgs::msg::PoseArray>(
+      object_pose_topic_, 10,
+      std::bind(&OpenArmXDeployNode::onObjectPoses, this, std::placeholders::_1));
 
-  // ---- 发布 ----
-  traj_pub_ = create_publisher<trajectory_msgs::msg::JointTrajectory>(
-      "/arm_joint_command", 10);
-  gripper_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
-      "/gripper_command", 10);
+  // ---- Action 客户端 (镜像 GUI 的控制接口) ----
+  traj_client_ = rclcpp_action::create_client<FollowJointTrajectory>(
+      this, "/" + arm_side_ + "_joint_trajectory_controller/follow_joint_trajectory");
+  gripper_client_ = rclcpp_action::create_client<GripperCommand>(
+      this, "/" + arm_side_ + "_gripper_controller/gripper_cmd");
 
   // ---- 服务 ----
   grasp_srv_ = create_service<std_srvs::srv::Trigger>(
@@ -223,69 +231,97 @@ OpenArmXDeployNode::OpenArmXDeployNode()
       std::bind(&OpenArmXDeployNode::handleReset, this,
                 std::placeholders::_1, std::placeholders::_2));
 
-  RCLCPP_INFO(get_logger(), "OpenArmX deploy node started. control_rate=%.1f Hz", control_rate_);
+  RCLCPP_INFO(get_logger(), "OpenArmX deploy node started. control_rate=%.1f Hz",
+              control_rate_);
+}
+
+OpenArmXDeployNode::~OpenArmXDeployNode() {
+  grasp_active_ = false;
+  if (grasp_thread_.joinable()) grasp_thread_.join();
 }
 
 // --------------------------------------------------------------------------
 // 参数加载
 // --------------------------------------------------------------------------
 void OpenArmXDeployNode::loadParameters() {
-  declare_parameter("robot", "JGZH");
-  declare_parameter("checkpoint", "");  // TorchScript .pt model path
+  declare_parameter("arm_side", "right");
+  declare_parameter("object_pose_topic", "/yolo_detection/object_poses");
+  declare_parameter("base_frame", "openarm_body_link0");
+  declare_parameter("object_timeout", 1.0);
+  declare_parameter("checkpoint", "models/jgzh_sim2real.pt");  // 相对路径按包 share 目录解析
   declare_parameter("max_steps", 400);
   declare_parameter("action_pos_scale", 0.03);
   declare_parameter("action_gripper_scale", 0.005);
   declare_parameter("control_rate", 30.0);
+  declare_parameter("max_joint_velocity", 0.50);
+  declare_parameter("min_arm_goal_duration", 0.25);
+  declare_parameter("gripper_goal_epsilon", 0.0005);
   declare_parameter("approach_height", 0.15);
   declare_parameter("grasp_height_offset", 0.008);
   declare_parameter("lift_height", 0.12);
   declare_parameter("grasp_yaw", 0.0);
+  declare_parameter("table_z", 0.80);
   declare_parameter("close_steps", 30);
   declare_parameter("settle_steps", 20);
   declare_parameter("lift_steps", 40);
+  declare_parameter("home_pose", "");     // 固定初始关节角 (逗号分隔 7 个), 空=启动时记录
+  declare_parameter("home_tolerance", 0.02);
+  declare_parameter("home_timeout", 30.0);
+  declare_parameter("home_interp_steps", 50);
 
-  // ---- 初始位姿参数 ----
-  declare_parameter("home_pose", "");  // 固定初始关节角 (逗号分隔, 如 "0.1,-1.2,..."), 空=启动时记录
-  declare_parameter("home_tolerance", 0.02);              // 到位容差 (rad)
-  declare_parameter("home_timeout", 30.0);                // 回位超时 (s)
-  declare_parameter("home_interp_steps", 50);             // 回位轨迹插值步数
-
-  // ---- MoveIt2 参数 ----
-  declare_parameter("move_group_name", "arm");           // MoveIt 规划组名
-  declare_parameter("use_moveit", true);                 // 回位是否使用 MoveIt2
-  declare_parameter("moveit_velocity_scale", 0.3);       // 回位速度缩放 (0~1)
-  declare_parameter("moveit_acceleration_scale", 0.3);   // 回位加速度缩放 (0~1)
-
-  auto robot_name = get_parameter("robot").as_string();
-  if (robot_name == "JGZH") robot_index_ = 0;
-  else if (robot_name == "OpenArmX") robot_index_ = 1;
-  else if (robot_name == "Sciurus17") robot_index_ = 2;
-  else {
-    RCLCPP_WARN(get_logger(), "Unknown robot '%s', using JGZH", robot_name.c_str());
-    robot_index_ = 0;
+  arm_side_ = get_parameter("arm_side").as_string();
+  if (arm_side_ != "left" && arm_side_ != "right") {
+    RCLCPP_WARN(get_logger(), "Unknown arm_side '%s', using 'right'.", arm_side_.c_str());
+    arm_side_ = "right";
   }
+
+  // 关节名: openarm_<side>_joint1..7 + openarm_<side>_finger_joint1
+  arm_joint_names_.clear();
+  for (int i = 1; i <= 7; ++i) {
+    arm_joint_names_.push_back("openarm_" + arm_side_ + "_joint" + std::to_string(i));
+  }
+  gripper_joint_name_ = "openarm_" + arm_side_ + "_finger_joint1";
+
+  object_pose_topic_ = get_parameter("object_pose_topic").as_string();
+  base_frame_ = get_parameter("base_frame").as_string();
+  object_timeout_ = get_parameter("object_timeout").as_double();
 
   model_path_ = get_parameter("checkpoint").as_string();
-  if (model_path_.empty()) {
-    RCLCPP_WARN(get_logger(), "No checkpoint path provided! Use --ros-args -p checkpoint:=<path>");
+  if (!model_path_.empty() && model_path_[0] != '/') {
+    // 相对路径 -> 包 share 目录 (models/ 已随包安装)
+    try {
+      std::string share = ament_index_cpp::get_package_share_directory("openarmx_deploy");
+      model_path_ = share + "/" + model_path_;
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(get_logger(), "Cannot resolve share dir: %s", e.what());
+    }
   }
+
   max_steps_ = get_parameter("max_steps").as_int();
   action_pos_scale_ = get_parameter("action_pos_scale").as_double();
   action_gripper_scale_ = get_parameter("action_gripper_scale").as_double();
   control_rate_ = get_parameter("control_rate").as_double();
+  max_joint_velocity_ = get_parameter("max_joint_velocity").as_double();
+  min_arm_goal_duration_ = get_parameter("min_arm_goal_duration").as_double();
+  gripper_goal_epsilon_ = get_parameter("gripper_goal_epsilon").as_double();
+  if (max_joint_velocity_ <= 0.0 || min_arm_goal_duration_ <= 0.0 ||
+      gripper_goal_epsilon_ < 0.0) {
+    throw std::runtime_error(
+        "max_joint_velocity and min_arm_goal_duration must be positive; "
+        "gripper_goal_epsilon must not be negative");
+  }
   approach_height_ = get_parameter("approach_height").as_double();
   grasp_height_offset_ = get_parameter("grasp_height_offset").as_double();
   lift_height_ = get_parameter("lift_height").as_double();
   grasp_yaw_ = get_parameter("grasp_yaw").as_double();
+  table_z_ = get_parameter("table_z").as_double();
   close_steps_ = get_parameter("close_steps").as_int();
   settle_steps_ = get_parameter("settle_steps").as_int();
   lift_steps_ = get_parameter("lift_steps").as_int();
 
-  // ---- 初始位姿 ----
   {
     auto home_pose_str = get_parameter("home_pose").as_string();
     if (!home_pose_str.empty()) {
-      // 解析逗号分隔的关节角字符串 -> vector<double>
       std::stringstream ss(home_pose_str);
       std::string token;
       while (std::getline(ss, token, ',')) {
@@ -297,16 +333,10 @@ void OpenArmXDeployNode::loadParameters() {
   home_timeout_ = get_parameter("home_timeout").as_double();
   home_interp_steps_ = get_parameter("home_interp_steps").as_int();
 
-  move_group_name_ = get_parameter("move_group_name").as_string();
-  use_moveit_ = get_parameter("use_moveit").as_bool();
-  moveit_velocity_scale_ = get_parameter("moveit_velocity_scale").as_double();
-  moveit_acceleration_scale_ = get_parameter("moveit_acceleration_scale").as_double();
-  if (use_moveit_) {
-    RCLCPP_INFO(get_logger(), "MoveIt2 home planning enabled (group='%s', vel_scale=%.2f).",
-                move_group_name_.c_str(), moveit_velocity_scale_);
-  }
-
   if (!home_pose_param_.empty()) {
+    if (home_pose_param_.size() != arm_joint_names_.size()) {
+      throw std::runtime_error("Parameter 'home_pose' must contain exactly 7 values");
+    }
     home_qpos_ = home_pose_param_;
     home_recorded_ = true;
     RCLCPP_INFO(get_logger(), "Home pose set from parameter (%zu joints).",
@@ -322,21 +352,22 @@ void OpenArmXDeployNode::loadParameters() {
 void OpenArmXDeployNode::onJointState(
     const sensor_msgs::msg::JointState::SharedPtr msg) {
   std::lock_guard<std::mutex> lock(mutex_);
-  const auto& cfg = kRobotConfigs[robot_index_];
-  for (size_t i = 0; i < msg->name.size(); ++i) {
-    for (const auto& name : cfg.arm_joint_names) {
+  for (size_t i = 0; i < msg->name.size() && i < msg->position.size(); ++i) {
+    for (const auto& name : arm_joint_names_) {
       if (msg->name[i] == name) arm_qpos_[name] = msg->position[i];
     }
-    for (const auto& name : cfg.gripper_joint_names) {
-      if (msg->name[i] == name) gripper_qpos_[name] = msg->position[i];
+    if (msg->name[i] == gripper_joint_name_) {
+      gripper_qpos_[gripper_joint_name_] = msg->position[i];
     }
   }
-  joints_received_ = true;
+  joints_received_ = std::all_of(
+      arm_joint_names_.begin(), arm_joint_names_.end(),
+      [this](const std::string& name) { return arm_qpos_.count(name) != 0; });
 
   // 记录初始位姿: 首次收到全部臂关节状态时保存为 home (若参数未指定固定位姿)
   if (!home_recorded_ && home_pose_param_.empty()) {
     bool all_present = true;
-    for (const auto& name : cfg.arm_joint_names) {
+    for (const auto& name : arm_joint_names_) {
       if (!arm_qpos_.count(name)) {
         all_present = false;
         break;
@@ -344,7 +375,7 @@ void OpenArmXDeployNode::onJointState(
     }
     if (all_present) {
       home_qpos_.clear();
-      for (const auto& name : cfg.arm_joint_names) {
+      for (const auto& name : arm_joint_names_) {
         home_qpos_.push_back(arm_qpos_[name]);
       }
       home_recorded_ = true;
@@ -353,12 +384,34 @@ void OpenArmXDeployNode::onJointState(
   }
 }
 
-void OpenArmXDeployNode::onObjectPose(
-    const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+void OpenArmXDeployNode::onObjectPoses(
+    const geometry_msgs::msg::PoseArray::SharedPtr msg) {
+  if (msg->poses.empty()) return;
+  if (msg->header.frame_id.empty()) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                         "Ignoring object pose with an empty frame_id.");
+    return;
+  }
+
+  geometry_msgs::msg::PointStamped source;
+  source.header = msg->header;
+  source.point = msg->poses[0].position;
+  geometry_msgs::msg::PointStamped target;
+  try {
+    target = tf_buffer_->transform(source, base_frame_, tf2::durationFromSec(0.1));
+  } catch (const tf2::TransformException& e) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                         "Cannot transform object from '%s' to '%s': %s",
+                         msg->header.frame_id.c_str(), base_frame_.c_str(), e.what());
+    return;
+  }
+
   std::lock_guard<std::mutex> lock(mutex_);
-  object_x_ = msg->pose.position.x;
-  object_y_ = msg->pose.position.y;
-  object_z_ = msg->pose.position.z;
+  const auto& p = target.point;
+  object_x_ = p.x;
+  object_y_ = p.y;
+  object_z_ = p.z;
+  object_stamp_ = now();
   object_received_ = true;
 }
 
@@ -368,18 +421,30 @@ void OpenArmXDeployNode::onObjectPose(
 void OpenArmXDeployNode::handleGrasp(
     const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
     std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
-  if (grasp_active_) {
+  if (grasp_active_.load()) {
     response->success = false;
     response->message = "Grasp already in progress";
     return;
   }
-  if (!joints_received_ || !object_received_) {
+  if (!joints_received_.load() || !object_received_.load()) {
     response->success = false;
-    response->message = "Waiting for /joint_states and /object_pose";
+    response->message = "Waiting for /joint_states and object poses";
     return;
   }
-  // 若上一轮抓取线程仍在收尾 (刚被 reset/自然结束), 先等它退出。
-  // 否则重新赋值 std::thread 会对 joinable 线程调用 std::terminate。
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if ((now() - object_stamp_).seconds() > object_timeout_) {
+      response->success = false;
+      response->message = "Object pose is stale";
+      return;
+    }
+  }
+  if (!traj_client_->action_server_is_ready() ||
+      !gripper_client_->action_server_is_ready()) {
+    response->success = false;
+    response->message = "Arm or gripper controller action server is not ready";
+    return;
+  }
   if (grasp_thread_running_ && grasp_thread_.joinable()) {
     grasp_thread_.join();
     grasp_thread_running_ = false;
@@ -389,8 +454,6 @@ void OpenArmXDeployNode::handleGrasp(
   response->success = true;
   response->message = "Grasp started";
 
-  // 在独立线程运行抓取循环 (避免阻塞 ROS 回调)
-  // 保存线程句柄，复位时等待其退出后再回初始位姿
   grasp_thread_ = std::thread([this]() { runGraspLoop(); });
   grasp_thread_running_ = true;
 }
@@ -398,17 +461,14 @@ void OpenArmXDeployNode::handleGrasp(
 void OpenArmXDeployNode::handleReset(
     const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
     std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
-  // ① 停止抓取循环并等待线程退出 (最多一个控制周期)
   grasp_active_ = false;
   if (grasp_thread_running_ && grasp_thread_.joinable()) {
     grasp_thread_.join();
     grasp_thread_running_ = false;
   }
 
-  // ② 回到初始位姿 (带超时保护)
   moveToHome();
 
-  // ③ 清理状态: 销毁状态机, 步数清零, 强制重新感知物体
   state_machine_.reset();
   step_count_ = 0;
   {
@@ -423,47 +483,43 @@ void OpenArmXDeployNode::handleReset(
 // --------------------------------------------------------------------------
 // 核心抓取循环
 // --------------------------------------------------------------------------
-/*
-30hz的控制循环：每一步都重新观测(最新的传感器数据)、重新推理(根据当前状态决策)、微调目标并执行动作(实时修正轨迹)
-因此相较于传统视觉抓取("视觉定位→逆解→执行")，基于RL伺服的抓取在每一步都能重新规划和动态调整目标，有闭环反馈和实时微调，根据最新的观测和策略输出进行微调，具有更强的鲁棒性和适应性。
-*/
+// 30Hz 控制循环：每步重新观测、重新推理、微调目标并执行（RL 伺服闭环）。
+// 类似于单点伺服（servo-to-pose）+ RL 微调。每步执行的目标位姿由 expert 规划 + RL 输出修正量组成。
 void OpenArmXDeployNode::runGraspLoop() {
   RCLCPP_INFO(get_logger(), "Starting grasp loop...");
   step_count_ = 0;
+  last_gripper_goal_ = std::numeric_limits<double>::quiet_NaN();
 
-  // 初始化状态机
+  // Invalidate callbacks left over from a previous grasp/reset session.
+  arm_goal_id_.fetch_add(1);
+  arm_goal_active_ = false;
+
   {
     std::lock_guard<std::mutex> lock(mutex_);
     std::array<double, 3> obj_pos = {object_x_, object_y_, object_z_};
     state_machine_ = std::make_unique<GraspStateMachine>(
         obj_pos, approach_height_, grasp_height_offset_, lift_height_,
-        /*table_clearance=*/0.02, grasp_yaw_,
+        /*table_clearance=*/0.02, table_z_, grasp_yaw_,
         close_steps_, settle_steps_, lift_steps_,
-        kRobotConfigs[robot_index_].gripper_open,
-        kRobotConfigs[robot_index_].gripper_close);
+        gripper_open_, gripper_close_);
   }
 
   rclcpp::Rate rate(control_rate_);
 
-  while (grasp_active_ && rclcpp::ok()) {
+  while (grasp_active_.load() && rclcpp::ok()) {
     if (step_count_ >= max_steps_) {
       RCLCPP_WARN(get_logger(), "Max steps (%d) reached. Stopping.", max_steps_);
       break;
     }
 
-    if (state_machine_->isDone()) {
+    if (state_machine_->isDone() && !arm_goal_active_.load()) {
       grasp_success_ = true;
-      RCLCPP_INFO(get_logger(), "Grasp completed successfully!");
+      RCLCPP_INFO(get_logger(), "Grasp motion sequence completed.");
       break;
     }
 
-    // 1. 构造观测
     auto obs = buildObservation();
-
-    // 2. 策略推理
     auto action = policyAction(obs);
-
-    // 3. 执行动作
     executeAction(action);
 
     step_count_++;
@@ -473,7 +529,9 @@ void OpenArmXDeployNode::runGraspLoop() {
   grasp_active_ = false;
 
   if (grasp_success_) {
-    RCLCPP_INFO(get_logger(), "Grasp SUCCESS — total steps: %d", step_count_);
+    RCLCPP_INFO(get_logger(),
+                "Grasp sequence completed (object pickup is not sensor-verified), steps: %d",
+                step_count_);
   } else {
     RCLCPP_WARN(get_logger(), "Grasp STOPPED — total steps: %d", step_count_);
   }
@@ -482,44 +540,24 @@ void OpenArmXDeployNode::runGraspLoop() {
 // --------------------------------------------------------------------------
 // 观测构造
 // --------------------------------------------------------------------------
-/*
-┌─────────────────────────────────────────────────────────────┐
-│ 观测向量 (29维)                                            │
-├─────────────────────────────────────────────────────────────┤
-│ [0-6]   7个关节角度 (arm_q)                                │
-│ [7-8]   2个夹爪位置 (grip_q)                              │
-│ [9-11]  物体位置 (ox, oy, oz)                             │
-│ [12-14] 手指中心 (近似 = object + 0.15m)                  │
-│ [15-17] 物体到手指偏移 (由builder内部计算？)              │
-│ [18-20] 目标TCP位置 (target_pos)                          │
-│ [21]    目标夹爪开度 (gripper_target)                     │
-│ [22]    阶段进度 (step_count/max_steps)                   │
-│ [23-28] 阶段one-hot (center_xy/approach/descend/...)     │
-└─────────────────────────────────────────────────────────────┘
-*/
 std::vector<float> OpenArmXDeployNode::buildObservation() {
-  const auto& cfg = kRobotConfigs[robot_index_];
-
-  std::vector<double> arm_q;
-  std::vector<double> grip_q;
+  std::vector<double> arm_q = currentArmQ();
+  double grip = 0.0;
   double ox, oy, oz;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& name : cfg.arm_joint_names) {
-      arm_q.push_back(arm_qpos_.count(name) ? arm_qpos_[name] : 0.0);
-    }
-    for (const auto& name : cfg.gripper_joint_names) {
-      grip_q.push_back(gripper_qpos_.count(name) ? gripper_qpos_[name] : 0.0);
-    }
+    grip = gripper_qpos_.count(gripper_joint_name_)
+               ? gripper_qpos_[gripper_joint_name_] : 0.0;
     ox = object_x_; oy = object_y_; oz = object_z_;
   }
 
-  obs_builder_.updateArmQpos(arm_q);
-  obs_builder_.updateGripperQpos(grip_q);
-  obs_builder_.updateObjectPos(ox, oy, oz);
+  auto tcp = kin_->forwardPos(arm_q);
 
-  // fingerpad center 近似 (真实部署用 TF)
-  obs_builder_.updateFingerpadCenter(ox, oy, oz + 0.15);
+  obs_builder_.updateArmQpos(arm_q);
+  // 真实夹爪为单指令关节 + mimic 指; 观测 2 维夹爪槽均填入同一开度
+  obs_builder_.updateGripperQpos({grip, grip});
+  obs_builder_.updateObjectPos(ox, oy, oz);
+  obs_builder_.updateFingerpadCenter(tcp[0], tcp[1], tcp[2]);
 
   std::array<double, 3> obj_arr = {ox, oy, oz};
   std::array<double, 3> target_pos;
@@ -536,18 +574,12 @@ std::vector<float> OpenArmXDeployNode::buildObservation() {
 // --------------------------------------------------------------------------
 // 策略推理
 // --------------------------------------------------------------------------
-/*
-输出的是修正量：相对于 expert 目标的增量 ([-1, 1] 映射到实际增量)
-输出修正量而不是绝对目标的原因是：策略网络训练时是基于 expert 的轨迹数据，输出修正量可以让策略在 expert 的基础上进行微调，而不是完全依赖策略网络生成绝对目标，这样可以提高学习效率和抓取的稳定性和鲁棒性。
-因此在执行动作时，先获取 expert 目标，然后加上策略输出的修正量，得到最终的目标位姿。
-策略学习什么？--> 网络学会在什么状态下输出什么样的修正值能获得最大奖励
-本质：将复杂任务分解为"粗规划+细调整"
-*/
+// 输出修正量: 相对于 expert 目标的增量 ([-1,1] 映射到实际增量), 粗规划+细调整。
 std::vector<float> OpenArmXDeployNode::policyAction(const std::vector<float>& obs) {
-  auto tensor = torch::from_blob("视觉定位→逆解→执行"
+  auto tensor = torch::from_blob(
       const_cast<float*>(obs.data()),
       {1, static_cast<long>(ObservationBuilder::kObservationDim)},
-      torch::kFloat32);base_target = state_machine.get_target(object_pos)
+      torch::kFloat32).clone();
 
   std::vector<torch::jit::IValue> inputs;
   inputs.push_back(tensor);
@@ -566,23 +598,15 @@ std::vector<float> OpenArmXDeployNode::policyAction(const std::vector<float>& ob
 // --------------------------------------------------------------------------
 // 执行动作
 // --------------------------------------------------------------------------
-/*
-强化学习策略引导的伺服控制，区别于传统"视觉定位→逆解→执行"方法
-*/base_target = state_machine.get_target(object_pos)
 void OpenArmXDeployNode::executeAction(const std::vector<float>& action) {
-  const auto& cfg = kRobotConfigs[robot_index_];
-
-  std::vector<double> arm_q;
+  std::vector<double> arm_q = currentArmQ();
   double ox, oy, oz;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& name : cfg.arm_joint_names) {
-      arm_q.push_back(arm_qpos_.count(name) ? arm_qpos_[name] : 0.0);
-    }
     ox = object_x_; oy = object_y_; oz = object_z_;
   }
 
-  // — 目标位姿（expert + 策略修正) —
+  // 目标位姿 (expert + 策略修正)
   std::array<double, 3> tar_pos, obj_arr = {ox, oy, oz};
   std::array<double, 9> tar_xmat;
   double expert_gripper;
@@ -592,12 +616,11 @@ void OpenArmXDeployNode::executeAction(const std::vector<float>& action) {
   tar_pos[1] += action[1] * action_pos_scale_;
   tar_pos[2] += action[2] * action_pos_scale_;
 
-  // — 夹爪目标 —
   double grip_target = std::clamp(
       expert_gripper + action[3] * action_gripper_scale_,
-      cfg.gripper_close, cfg.gripper_open);
+      gripper_close_, gripper_open_);
 
-  // — 状态机更新 —
+  // 状态机推进
   auto actual = getCurrentTCP();
   double pos_err = std::sqrt(
       (tar_pos[0] - actual[0]) * (tar_pos[0] - actual[0]) +
@@ -609,85 +632,160 @@ void OpenArmXDeployNode::executeAction(const std::vector<float>& action) {
   double z_err = std::abs(tar_pos[2] - actual[2]);
   state_machine_->update(pos_err, xy_err, z_err);
 
-  // — 发布夹爪指令 —
-  publishGripperCommand(grip_target);
+  if (std::isnan(last_gripper_goal_) ||
+      std::abs(grip_target - last_gripper_goal_) >= gripper_goal_epsilon_) {
+    sendGripperGoal(grip_target);
+    last_gripper_goal_ = grip_target;
+  }
 
-  // — IK → 关节指令 —
-  auto ik_q = solveIK(tar_pos, tar_xmat, arm_q);
-  if (!ik_q.empty()) {
-    publishJointTrajectory(ik_q);
+  // Keep one trajectory segment in flight. The policy still runs at
+  // control_rate_, but a new IK target is sent only after JTC finishes the
+  // previous segment, preventing a stream of 33 ms preempting goals.
+  if (!arm_goal_active_.load()) {
+    std::vector<double> ik_q;
+    if (solveIK(tar_pos, arm_q, ik_q)) {
+      sendArmGoal(arm_q, ik_q);
+    }
   }
 }
 
 // --------------------------------------------------------------------------
 // 辅助 — TCP / IK / 发布
 // --------------------------------------------------------------------------
-std::array<double, 3> OpenArmXDeployNode::getCurrentTCP() {
-  // 占位：实际部署需通过 TF 或正运动学获取
+std::vector<double> OpenArmXDeployNode::currentArmQ() {
+  std::vector<double> arm_q(7, 0.0);
   std::lock_guard<std::mutex> lock(mutex_);
-  return {object_x_, object_y_, object_z_ + 0.15};
+  for (size_t i = 0; i < arm_joint_names_.size(); ++i) {
+    const auto& name = arm_joint_names_[i];
+    arm_q[i] = arm_qpos_.count(name) ? arm_qpos_[name] : 0.0;
+  }
+  return arm_q;
 }
 
-std::vector<double> OpenArmXDeployNode::solveIK(
-    const std::array<double, 3>& /*target_pos*/,
-    const std::array<double, 9>& /*target_xmat*/,
-    const std::vector<double>& initial_q) {
-  // 占位：实际部署需接入 MoveIt2 IK 服务 或 TRAC-IK
-  // 示例：
-  //   auto client = create_client<...>("/compute_ik");
-  //   ... 发送请求 ...
-  //   return solution;
-  RCLCPP_DEBUG(get_logger(), "IK placeholder — replace with MoveIt2 / TRAC-IK call");
-  return initial_q;
+std::array<double, 3> OpenArmXDeployNode::getCurrentTCP() {
+  return kin_->forwardPos(currentArmQ());
 }
 
-void OpenArmXDeployNode::publishJointTrajectory(const std::vector<double>& q) {
-  auto msg = trajectory_msgs::msg::JointTrajectory();
-  msg.header.stamp = now();
-  msg.joint_names = kRobotConfigs[robot_index_].arm_joint_names;
-
-  trajectory_msgs::msg::JointTrajectoryPoint point;
-  point.positions = q;
-  point.time_from_start = rclcpp::Duration::from_seconds(1.0 / control_rate_);
-  msg.points.push_back(point);
-
-  traj_pub_->publish(msg);
+bool OpenArmXDeployNode::solveIK(const std::array<double, 3>& target_pos,
+                                 const std::vector<double>& initial_q,
+                                 std::vector<double>& out_q) {
+  bool converged = kin_->inversePosition(target_pos, initial_q, out_q);
+  if (!converged) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                         "IK did not converge; holding the current arm command.");
+  }
+  return converged;
 }
 
-void OpenArmXDeployNode::publishGripperCommand(double position) {
-  auto msg = std_msgs::msg::Float64MultiArray();
-  size_t n = kRobotConfigs[robot_index_].gripper_joint_names.size();
-  msg.data.resize(n, position);
-  gripper_pub_->publish(msg);
+void OpenArmXDeployNode::sendArmGoal(const std::vector<double>& start_q,
+                                     const std::vector<double>& target_q) {
+  if (!traj_client_->action_server_is_ready()) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                         "Trajectory action server not ready (controller not started?).");
+    return;
+  }
+  if (start_q.size() != arm_joint_names_.size() ||
+      target_q.size() != arm_joint_names_.size()) {
+    RCLCPP_ERROR(get_logger(),
+                 "Cannot send arm goal: expected %zu joints, got start=%zu target=%zu.",
+                 arm_joint_names_.size(), start_q.size(), target_q.size());
+    return;
+  }
+
+  bool expected = false;
+  if (!arm_goal_active_.compare_exchange_strong(expected, true)) {
+    return;
+  }
+
+  double max_delta = 0.0;
+  for (size_t i = 0; i < target_q.size(); ++i) {
+    max_delta = std::max(max_delta, std::abs(target_q[i] - start_q[i]));
+  }
+  // With zero endpoint velocities, JTC's cubic interpolation reaches a peak
+  // speed of 1.5 * delta / duration for the largest-moving joint.
+  const double duration_s = std::max(
+      min_arm_goal_duration_, 1.5 * max_delta / max_joint_velocity_);
+
+  auto goal = FollowJointTrajectory::Goal();
+  goal.trajectory.joint_names = arm_joint_names_;
+  trajectory_msgs::msg::JointTrajectoryPoint start_point;
+  start_point.positions = start_q;
+  start_point.velocities.assign(start_q.size(), 0.0);
+  start_point.time_from_start = rclcpp::Duration::from_seconds(0.0);
+  goal.trajectory.points.push_back(start_point);
+
+  trajectory_msgs::msg::JointTrajectoryPoint target_point;
+  target_point.positions = target_q;
+  target_point.velocities.assign(target_q.size(), 0.0);
+  target_point.time_from_start = rclcpp::Duration::from_seconds(duration_s);
+  goal.trajectory.points.push_back(target_point);
+
+  const uint64_t goal_id = arm_goal_id_.fetch_add(1) + 1;
+  auto options = rclcpp_action::Client<FollowJointTrajectory>::SendGoalOptions();
+  options.goal_response_callback =
+      [this, goal_id](GoalHandleFollowJointTrajectory::SharedPtr goal_handle) {
+        if (!goal_handle && arm_goal_id_.load() == goal_id) {
+          arm_goal_active_ = false;
+          RCLCPP_WARN(get_logger(), "Arm trajectory goal was rejected.");
+        }
+      };
+  options.result_callback =
+      [this, goal_id](const GoalHandleFollowJointTrajectory::WrappedResult& result) {
+        if (arm_goal_id_.load() != goal_id) {
+          return;
+        }
+        arm_goal_active_ = false;
+        if (result.code != rclcpp_action::ResultCode::SUCCEEDED) {
+          RCLCPP_WARN(get_logger(), "Arm trajectory ended with result code %d.",
+                      static_cast<int>(result.code));
+        }
+      };
+
+  try {
+    traj_client_->async_send_goal(goal, options);
+    RCLCPP_INFO(get_logger(),
+                "Arm trajectory sent: max_delta=%.3f rad, duration=%.3f s.",
+                max_delta, duration_s);
+  } catch (const std::exception& e) {
+    if (arm_goal_id_.load() == goal_id) {
+      arm_goal_active_ = false;
+    }
+    RCLCPP_ERROR(get_logger(), "Failed to send arm trajectory: %s", e.what());
+  }
+}
+
+void OpenArmXDeployNode::sendGripperGoal(double position) {
+  if (!gripper_client_->action_server_is_ready()) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                         "Gripper action server not ready (controller not started?).");
+    return;
+  }
+
+  auto goal = GripperCommand::Goal();
+  goal.command.position = position;
+  goal.command.max_effort = 1.0;
+
+  auto options = rclcpp_action::Client<GripperCommand>::SendGoalOptions();
+  gripper_client_->async_send_goal(goal, options);
 }
 
 // --------------------------------------------------------------------------
 // 回初始位姿
 // --------------------------------------------------------------------------
 void OpenArmXDeployNode::moveToHome() {
-  const auto& cfg = kRobotConfigs[robot_index_];
-
   if (!home_recorded_) {
     RCLCPP_WARN(get_logger(),
                 "Home pose not available (no joint states yet / no home_pose param). Skipping.");
     return;
   }
-  if (home_qpos_.size() != cfg.arm_joint_names.size()) {
+  if (home_qpos_.size() != arm_joint_names_.size()) {
     RCLCPP_WARN(get_logger(), "Home pose size (%zu) != arm joint count (%zu). Skipping.",
-                home_qpos_.size(), cfg.arm_joint_names.size());
+                home_qpos_.size(), arm_joint_names_.size());
     return;
   }
 
-  // 当前关节角
-  std::vector<double> current;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& name : cfg.arm_joint_names) {
-      current.push_back(arm_qpos_.count(name) ? arm_qpos_[name] : 0.0);
-    }
-  }
+  std::vector<double> current = currentArmQ();
 
-  // 若已基本在初始位姿, 直接返回
   double max_err = 0.0;
   for (size_t i = 0; i < current.size(); ++i) {
     max_err = std::max(max_err, std::abs(current[i] - home_qpos_[i]));
@@ -697,17 +795,8 @@ void OpenArmXDeployNode::moveToHome() {
     return;
   }
 
-  // 优先使用 MoveIt2 避障规划 (带障碍物感知), 失败时降级为关节插值
-  bool executed = false;
-  if (use_moveit_) {
-    executed = planAndExecuteWithMoveIt(home_qpos_);
-  }
-  if (!executed) {
-    RCLCPP_WARN(get_logger(), "MoveIt2 unavailable or failed — falling back to joint-space interpolation (NO obstacle avoidance).");
-    interpolateToHome();
-  }
+  interpolateToHome();
 
-  // 等待实际到位
   if (waitForHome(home_timeout_)) {
     RCLCPP_INFO(get_logger(), "Reached home pose.");
   } else {
@@ -716,71 +805,18 @@ void OpenArmXDeployNode::moveToHome() {
 }
 
 // --------------------------------------------------------------------------
-// MoveIt2 避障规划 + 执行 (回位)
-// --------------------------------------------------------------------------
-bool OpenArmXDeployNode::planAndExecuteWithMoveIt(const std::vector<double>& target_q) {
-  try {
-    // 传入 shared_from_this()，MoveGroupInterface 使用本节点通信
-    moveit::planning_interface::MoveGroupInterface move_group(
-        shared_from_this(), move_group_name_);
-
-    // 从当前真实关节状态开始规划
-    move_group.setStartStateToCurrentState();
-    // 关节空间目标 = home 位姿
-    move_group.setJointValueTarget(target_q);
-    // 回位动作放慢，降低风险
-    move_group.setMaxVelocityScalingFactor(moveit_velocity_scale_);
-    move_group.setMaxAccelerationScalingFactor(moveit_acceleration_scale_);
-
-    moveit::planning_interface::MoveGroupInterface::Plan plan;
-    auto plan_result = move_group.plan(plan);
-    if (plan_result != moveit::core::MoveItErrorCode::SUCCESS) {
-      RCLCPP_WARN(get_logger(), "MoveIt2 plan failed (error code %d).",
-                  static_cast<int>(plan_result.val));
-      return false;
-    }
-
-    size_t n_pts = plan.trajectory_.joint_trajectory.points.size();
-    RCLCPP_INFO(get_logger(), "MoveIt2 plan OK (%zu waypoints, %.2f s). Executing...",
-                n_pts,
-                n_pts > 0
-                    ? plan.trajectory_.joint_trajectory.points.back().time_from_start.sec +
-                          plan.trajectory_.joint_trajectory.points.back().time_from_start.nanosec / 1e9
-                    : 0.0);
-
-    auto exec_result = move_group.execute(plan);
-    if (exec_result != moveit::core::MoveItErrorCode::SUCCESS) {
-      RCLCPP_WARN(get_logger(), "MoveIt2 execute failed (error code %d).",
-                  static_cast<int>(exec_result.val));
-      return false;
-    }
-    RCLCPP_INFO(get_logger(), "MoveIt2 executed home motion successfully.");
-    return true;
-  } catch (const std::exception& e) {
-    // 例如 move_group 节点未启动、规划组名错误、TF 缺失等
-    RCLCPP_WARN(get_logger(), "MoveIt2 exception: %s", e.what());
-    return false;
-  }
-}
-
-// --------------------------------------------------------------------------
-// 降级方案: 关节空间线性插值 (无避障)
+// 关节空间线性插值回位 (多点轨迹, 经 Action 发送)
 // --------------------------------------------------------------------------
 void OpenArmXDeployNode::interpolateToHome() {
-  const auto& cfg = kRobotConfigs[robot_index_];
-
-  std::vector<double> current;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& name : cfg.arm_joint_names) {
-      current.push_back(arm_qpos_.count(name) ? arm_qpos_[name] : 0.0);
-    }
+  if (!traj_client_->action_server_is_ready()) {
+    RCLCPP_WARN(get_logger(), "Trajectory action server not ready — cannot move home.");
+    return;
   }
 
-  // 生成从当前 → home 的多点插值轨迹 (避免一步到位导致关节速度过大)
-  auto msg = trajectory_msgs::msg::JointTrajectory();
-  msg.header.stamp = now();
-  msg.joint_names = cfg.arm_joint_names;
+  std::vector<double> current = currentArmQ();
+
+  auto goal = FollowJointTrajectory::Goal();
+  goal.trajectory.joint_names = arm_joint_names_;
   double step_duration = 1.0 / control_rate_;
   for (int i = 1; i <= home_interp_steps_; ++i) {
     double t = static_cast<double>(i) / home_interp_steps_;
@@ -790,23 +826,21 @@ void OpenArmXDeployNode::interpolateToHome() {
       point.positions.push_back(current[j] + t * (home_qpos_[j] - current[j]));
     }
     point.time_from_start = rclcpp::Duration::from_seconds(i * step_duration);
-    msg.points.push_back(point);
+    goal.trajectory.points.push_back(point);
   }
-  traj_pub_->publish(msg);
+  traj_client_->async_send_goal(goal);
   RCLCPP_INFO(get_logger(), "Interpolating to home pose (%d steps)...", home_interp_steps_);
 }
 
 bool OpenArmXDeployNode::waitForHome(double timeout_s) {
-  const auto& cfg = kRobotConfigs[robot_index_];
-  if (home_qpos_.size() != cfg.arm_joint_names.size()) return false;
-getCurrentTCP
+  if (home_qpos_.size() != arm_joint_names_.size()) return false;
   rclcpp::Time start = now();
   while (rclcpp::ok()) {
     double max_err = 0.0;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      for (size_t i = 0; i < cfg.arm_joint_names.size(); ++i) {
-        const auto& name = cfg.arm_joint_names[i];
+      for (size_t i = 0; i < arm_joint_names_.size(); ++i) {
+        const auto& name = arm_joint_names_[i];
         if (!arm_qpos_.count(name)) return false;
         max_err = std::max(max_err, std::abs(arm_qpos_[name] - home_qpos_[i]));
       }
@@ -827,10 +861,10 @@ int main(int argc, char* argv[]) {
   rclcpp::init(argc, argv);
   try {
     auto node = std::make_shared<openarmx_deploy::OpenArmXDeployNode>();
-    // 多线程 executor: 服务回调 (reset → MoveIt2 plan/execute 阻塞等待 action 结果)
-    // 与话题回调 / action 回调并发处理，避免单线程 spin 死锁
+    // 多线程 executor: 服务回调 (reset 会 join 抓取线程并轮询关节状态) 与
+    // 话题/action 回调并发处理，避免单线程 spin 死锁。
     rclcpp::executors::MultiThreadedExecutor executor(
-        rclcpp::executors::MultiThreadedExecutor::make_params().num_threads(4));
+        rclcpp::ExecutorOptions(), 4u);
     executor.add_node(node);
     executor.spin();
   } catch (const std::exception& e) {

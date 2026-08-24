@@ -16,12 +16,13 @@ class GraspStateMachine {
                     double grasp_height_offset = 0.008,
                     double lift_height = 0.12,
                     double table_clearance = 0.02,
+                    double table_z = 0.80,
                     double grasp_yaw = 0.0,
                     int close_steps = 30,
                     int settle_steps = 20,
                     int lift_steps = 40,
-                    double gripper_open = 0.01,
-                    double gripper_close = -0.018);
+                    double gripper_open = 0.042,
+                    double gripper_close = 0.0);
 
   /// 根据位姿误差推进状态机
   void update(double position_error, double xy_error, double z_error);
@@ -55,6 +56,7 @@ class GraspStateMachine {
   double grasp_height_offset_;
   double lift_height_;
   double table_clearance_;
+  double table_z_;
   int close_steps_;
   int settle_steps_;
   int lift_steps_;

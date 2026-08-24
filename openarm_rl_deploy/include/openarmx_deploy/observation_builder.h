@@ -24,6 +24,7 @@ class ObservationBuilder {
   void updateArmQpos(const std::vector<double>& positions);
   void updateGripperQpos(const std::vector<double>& positions);
   void updateObjectPos(double x, double y, double z);
+  /// 手指中心（由 FK 得到的真实 TCP 位置），内部同时更新 obj2pad = object - pad
   void updateFingerpadCenter(double x, double y, double z);
   void updateTarget(const std::array<double, 3>& target_pos, double gripper_target);
   void updateState(int step_count, int max_steps,
@@ -37,6 +38,7 @@ class ObservationBuilder {
 
  private:
   std::array<float, kObservationDim> obs_{};
+  std::array<float, 3> obj_pos_{};  // 缓存物体位置，用于计算 obj2pad
 };
 
 }  // namespace openarmx_deploy

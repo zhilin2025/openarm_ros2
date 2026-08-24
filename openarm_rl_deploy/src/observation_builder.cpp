@@ -27,6 +27,7 @@ void ObservationBuilder::updateObjectPos(double x, double y, double z) {
   obs_[offset + 0] = static_cast<float>(x);
   obs_[offset + 1] = static_cast<float>(y);
   obs_[offset + 2] = static_cast<float>(z);
+  obj_pos_ = {static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
 }
 
 void ObservationBuilder::updateFingerpadCenter(double x, double y, double z) {
@@ -34,6 +35,12 @@ void ObservationBuilder::updateFingerpadCenter(double x, double y, double z) {
   obs_[offset + 0] = static_cast<float>(x);
   obs_[offset + 1] = static_cast<float>(y);
   obs_[offset + 2] = static_cast<float>(z);
+
+  // obj2pad (offset 15-17) = object_pos - fingerpad_center
+  size_t obj2pad_offset = kArmJoints + kGripperJoints + 3 + 3;
+  obs_[obj2pad_offset + 0] = obj_pos_[0] - static_cast<float>(x);
+  obs_[obj2pad_offset + 1] = obj_pos_[1] - static_cast<float>(y);
+  obs_[obj2pad_offset + 2] = obj_pos_[2] - static_cast<float>(z);
 }
 
 void ObservationBuilder::updateTarget(const std::array<double, 3>& target_pos,

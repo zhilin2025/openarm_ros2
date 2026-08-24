@@ -110,6 +110,8 @@
     <passive_joint name="openarm_left_finger_joint2"/>
     <passive_joint name="openarm_right_finger_joint2"/>
     <!--DISABLE COLLISIONS: By default it is assumed that any link of the robot could potentially come into collision with any other link in the robot. This tag disables collision checking between a specified pair of links. -->
+    <disable_collisions link1="openarm_body_link0" link2="camera_Link" reason="Adjacent"/>
+    <disable_collisions link1="openarm_body_link0" link2="head_Link" reason="Adjacent"/>
     <disable_collisions link1="openarm_body_link0" link2="openarm_left_link0" reason="Adjacent"/>
     <disable_collisions link1="openarm_body_link0" link2="openarm_left_link1" reason="Never"/>
     <disable_collisions link1="openarm_body_link0" link2="openarm_left_link2" reason="Never"/>

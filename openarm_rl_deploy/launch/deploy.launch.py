@@ -1,35 +1,63 @@
 # ROS2 Launch 文件
 # 用法:
-#   ros2 launch openarmx_deploy deploy.launch.py robot:=JGZH checkpoint:=checkpoints/jgzh_sim2real.pt
+#   ros2 launch openarmx_deploy deploy.launch.py arm_side:=right checkpoint:=<path>/jgzh_sim2real.pt
 
-import os
-
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, LogInfo
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    # -- 机器人型号 --
-    robot_arg = DeclareLaunchArgument(
-        "robot", default_value="JGZH",
-        choices=["JGZH", "OpenArmX", "Sciurus17"],
-        description="Robot model"
+    # -- 手臂选择 --
+    arm_side_arg = DeclareLaunchArgument(
+        "arm_side", default_value="right",
+        choices=["left", "right"],
+        description="Which arm to control"
     )
 
-    # -- 模型路径 --
+    # -- 模型路径 (相对路径按包 share 目录解析) --
     checkpoint_arg = DeclareLaunchArgument(
         "checkpoint",
         default_value="models/jgzh_sim2real.pt",
         description="TorchScript model path (.pt)"
     )
 
+    # -- 物体位姿话题 --
+    object_pose_topic_arg = DeclareLaunchArgument(
+        "object_pose_topic",
+        default_value="/yolo_detection/object_poses",
+        description="Object position topic (PoseArray)"
+    )
+    base_frame_arg = DeclareLaunchArgument(
+        "base_frame", default_value="openarm_body_link0",
+        description="Frame used by the arm FK/IK"
+    )
+    object_timeout_arg = DeclareLaunchArgument(
+        "object_timeout", default_value="1.0",
+        description="Reject detections older than this many seconds"
+    )
+    use_sim_time_arg = DeclareLaunchArgument(
+        "use_sim_time", default_value="false",
+        description="Use the Gazebo clock"
+    )
+
     # -- 控制参数 --
     control_rate_arg = DeclareLaunchArgument(
-        "control_rate", default_value="30",
-        description="Control loop frequency (Hz)"
+        "control_rate", default_value="30.0",
+        description="Policy loop frequency (Hz)"
+    )
+    max_joint_velocity_arg = DeclareLaunchArgument(
+        "max_joint_velocity", default_value="0.50",
+        description="Peak joint speed limit for RL trajectory segments (rad/s)"
+    )
+    min_arm_goal_duration_arg = DeclareLaunchArgument(
+        "min_arm_goal_duration", default_value="0.25",
+        description="Minimum duration of an RL arm trajectory segment (s)"
+    )
+    gripper_goal_epsilon_arg = DeclareLaunchArgument(
+        "gripper_goal_epsilon", default_value="0.0005",
+        description="Minimum gripper target change required to send a new goal (m)"
     )
     max_steps_arg = DeclareLaunchArgument(
         "max_steps", default_value="400",
@@ -45,17 +73,13 @@ def generate_launch_description():
     )
 
     # -- 抓取参数 --
-    approach_height_arg = DeclareLaunchArgument(
-        "approach_height", default_value="0.15"
-    )
-    grasp_height_offset_arg = DeclareLaunchArgument(
-        "grasp_height_offset", default_value="0.008"
-    )
-    lift_height_arg = DeclareLaunchArgument(
-        "lift_height", default_value="0.12"
-    )
-    grasp_yaw_arg = DeclareLaunchArgument(
-        "grasp_yaw", default_value="0.0"
+    approach_height_arg = DeclareLaunchArgument("approach_height", default_value="0.15")
+    grasp_height_offset_arg = DeclareLaunchArgument("grasp_height_offset", default_value="0.008")
+    lift_height_arg = DeclareLaunchArgument("lift_height", default_value="0.12")
+    grasp_yaw_arg = DeclareLaunchArgument("grasp_yaw", default_value="0.0")
+    table_z_arg = DeclareLaunchArgument(
+        "table_z", default_value="0.80",
+        description="Table plane height in arm base frame (for above-table clamping)"
     )
 
     # -- 初始位姿参数 --
@@ -72,20 +96,6 @@ def generate_launch_description():
         description="回位超时 (s)"
     )
 
-    # -- MoveIt2 参数 --
-    move_group_arg = DeclareLaunchArgument(
-        "move_group_name", default_value="arm",
-        description="MoveIt2 规划组名 (需匹配 moveit 配置)"
-    )
-    use_moveit_arg = DeclareLaunchArgument(
-        "use_moveit", default_value="true",
-        description="回位是否使用 MoveIt2 避障规划"
-    )
-    moveit_velocity_scale_arg = DeclareLaunchArgument(
-        "moveit_velocity_scale", default_value="0.3",
-        description="回位速度缩放 (0~1)"
-    )
-
     # -- 节点 --
     deploy_node = Node(
         package="openarmx_deploy",
@@ -93,9 +103,16 @@ def generate_launch_description():
         name="openarmx_deploy",
         output="screen",
         parameters=[{
-            "robot": LaunchConfiguration("robot"),
+            "arm_side": LaunchConfiguration("arm_side"),
             "checkpoint": LaunchConfiguration("checkpoint"),
+            "object_pose_topic": LaunchConfiguration("object_pose_topic"),
+            "base_frame": LaunchConfiguration("base_frame"),
+            "object_timeout": LaunchConfiguration("object_timeout"),
+            "use_sim_time": LaunchConfiguration("use_sim_time"),
             "control_rate": LaunchConfiguration("control_rate"),
+            "max_joint_velocity": LaunchConfiguration("max_joint_velocity"),
+            "min_arm_goal_duration": LaunchConfiguration("min_arm_goal_duration"),
+            "gripper_goal_epsilon": LaunchConfiguration("gripper_goal_epsilon"),
             "max_steps": LaunchConfiguration("max_steps"),
             "action_pos_scale": LaunchConfiguration("action_pos_scale"),
             "action_gripper_scale": LaunchConfiguration("action_gripper_scale"),
@@ -103,19 +120,24 @@ def generate_launch_description():
             "grasp_height_offset": LaunchConfiguration("grasp_height_offset"),
             "lift_height": LaunchConfiguration("lift_height"),
             "grasp_yaw": LaunchConfiguration("grasp_yaw"),
+            "table_z": LaunchConfiguration("table_z"),
             "home_pose": LaunchConfiguration("home_pose"),
             "home_tolerance": LaunchConfiguration("home_tolerance"),
             "home_timeout": LaunchConfiguration("home_timeout"),
-            "move_group_name": LaunchConfiguration("move_group_name"),
-            "use_moveit": LaunchConfiguration("use_moveit"),
-            "moveit_velocity_scale": LaunchConfiguration("moveit_velocity_scale"),
         }],
     )
 
     return LaunchDescription([
-        robot_arg,
+        arm_side_arg,
         checkpoint_arg,
+        object_pose_topic_arg,
+        base_frame_arg,
+        object_timeout_arg,
+        use_sim_time_arg,
         control_rate_arg,
+        max_joint_velocity_arg,
+        min_arm_goal_duration_arg,
+        gripper_goal_epsilon_arg,
         max_steps_arg,
         action_pos_scale_arg,
         action_gripper_scale_arg,
@@ -123,11 +145,9 @@ def generate_launch_description():
         grasp_height_offset_arg,
         lift_height_arg,
         grasp_yaw_arg,
+        table_z_arg,
         home_pose_arg,
         home_tolerance_arg,
         home_timeout_arg,
-        move_group_arg,
-        use_moveit_arg,
-        moveit_velocity_scale_arg,
         deploy_node,
     ])

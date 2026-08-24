@@ -1,0 +1,139 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="openarm_v11_gazebo">
+  <!-- Reuse the production v11 geometry and kinematics, but provide a
+       GazeboSystem instead of mock or CAN hardware. -->
+  <xacro:include filename="$(find openarm_description)/urdf/robot/v11.urdf.xacro"/>
+  <xacro:include filename="$(find realsense2_description)/urdf/_d435.urdf.xacro"/>
+
+  <link name="world"/>
+  <joint name="world_to_openarm" type="fixed">
+    <parent link="world"/>
+    <child link="openarm_body_link0"/>
+    <!-- The v11 body mesh extends 0.379 m below its root frame. -->
+    <origin xyz="0 0 0.38" rpy="0 0 0"/>
+  </joint>
+
+  <!-- The CAD camera STL has its 90 mm body width on +X. The RealSense macro
+       uses +Y for that same body width, so rotate the simulated D435 onto the
+       v11 CAD mounting frame. -->
+  <xacro:sensor_d435
+    parent="camera_Link"
+    name="camera"
+    use_nominal_extrinsics="true"
+    add_plug="false"
+    use_mesh="true">
+    <origin xyz="0 0 0" rpy="0 0 -1.57079632679"/>
+  </xacro:sensor_d435>
+
+  <xacro:macro name="gazebo_control_joint" params="name initial_position:=0.0 mimic:=none multiplier:=1.0">
+    <joint name="${name}">
+      <xacro:if value="${mimic != 'none'}">
+        <param name="mimic">${mimic}</param>
+        <param name="multiplier">${multiplier}</param>
+      </xacro:if>
+      <command_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">${initial_position}</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+  </xacro:macro>
+
+  <ros2_control name="OpenArmV11GazeboSystem" type="system">
+    <hardware>
+      <plugin>gazebo_ros2_control/GazeboSystem</plugin>
+    </hardware>
+
+    <xacro:gazebo_control_joint name="openarm_left_joint1" />
+    <xacro:gazebo_control_joint name="openarm_left_joint2" />
+    <xacro:gazebo_control_joint name="openarm_left_joint3"/>
+    <xacro:gazebo_control_joint name="openarm_left_joint4" />
+    <xacro:gazebo_control_joint name="openarm_left_joint5" />
+    <xacro:gazebo_control_joint name="openarm_left_joint6" />
+    <xacro:gazebo_control_joint name="openarm_left_joint7"/>
+    <xacro:gazebo_control_joint name="openarm_left_finger_joint1" />
+    <xacro:gazebo_control_joint
+      name="openarm_left_finger_joint2"
+      mimic="openarm_left_finger_joint1"
+      multiplier="-1.0"/>
+
+    <xacro:gazebo_control_joint name="openarm_right_joint1" />
+    <xacro:gazebo_control_joint name="openarm_right_joint2" />
+    <xacro:gazebo_control_joint name="openarm_right_joint3"/>
+    <xacro:gazebo_control_joint name="openarm_right_joint4" />
+    <xacro:gazebo_control_joint name="openarm_right_joint5" />
+    <xacro:gazebo_control_joint name="openarm_right_joint6" />
+    <xacro:gazebo_control_joint name="openarm_right_joint7"/>
+    <xacro:gazebo_control_joint name="openarm_right_finger_joint1" />
+    <xacro:gazebo_control_joint
+      name="openarm_right_finger_joint2"
+
+      mimic="openarm_right_finger_joint1"
+      multiplier="-1.0"/>
+  </ros2_control>
+
+  <gazebo>
+    <self_collide>false</self_collide>
+    <plugin filename="libgazebo_ros2_control.so" name="openarm_gazebo_ros2_control">
+      <parameters>$(find openarm_gazebo_sim)/config/controllers.yaml</parameters>
+    </plugin>
+  </gazebo>
+
+  <!-- Keep the empty hand mounting frames during URDF-to-SDF conversion.
+       Otherwise Gazebo Classic drops the downstream prismatic finger joints. -->
+  <gazebo reference="openarm_left_link6_to_link7">
+    <preserveFixedJoint>true</preserveFixedJoint>
+  </gazebo>
+  <gazebo reference="openarm_left_hand_joint">
+    <preserveFixedJoint>true</preserveFixedJoint>
+  </gazebo>
+  <gazebo reference="openarm_right_link6_to_link7">
+    <preserveFixedJoint>true</preserveFixedJoint>
+  </gazebo>
+  <gazebo reference="openarm_right_hand_joint">
+    <preserveFixedJoint>true</preserveFixedJoint>
+  </gazebo>
+  <!-- Attach the Gazebo renderer to the D435 depth frame. Gazebo cameras look
+       along the link +X axis; the RealSense optical frame maps +X to optical +Z. -->
+  <gazebo reference="camera_link">
+    <sensor name="realsense_d435" type="depth">
+      <pose>0 0 0 0 0 0</pose>
+      <always_on>true</always_on>
+      <update_rate>30.0</update_rate>
+      <visualize>true</visualize>
+      <camera>
+        <horizontal_fov>1.21126</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R8G8B8</format>
+        </image>
+        <depth_camera/>
+        <clip>
+          <near>0.10</near>
+          <far>5.0</far>
+        </clip>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.002</stddev>
+        </noise>
+      </camera>
+      <plugin filename="libgazebo_ros_camera.so" name="realsense_d435_plugin">
+        <ros>
+          <namespace>/camera</namespace>
+          <remapping>camera/image_raw:=color/image_raw</remapping>
+          <remapping>camera/camera_info:=color/camera_info</remapping>
+          <remapping>camera/depth/image_raw:=depth/image_rect_raw</remapping>
+          <remapping>camera/depth/camera_info:=depth/camera_info</remapping>
+          <remapping>camera/points:=depth/color/points</remapping>
+        </ros>
+        <camera_name>camera</camera_name>
+        <frame_name>camera_depth_optical_frame</frame_name>
+        <min_depth>0.10</min_depth>
+        <max_depth>5.0</max_depth>
+      </plugin>
+    </sensor>
+  </gazebo>
+</robot>

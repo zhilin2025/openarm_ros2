@@ -11,7 +11,6 @@ constexpr double kXYTol = 0.015;
 constexpr double kZTol = 0.02;
 constexpr double kPosTol = 0.03;
 constexpr int kFallback = 200;
-constexpr double kTableZ = 0.80;
 }  // namespace
 
 GraspStateMachine::GraspStateMachine(const std::array<double, 3>& object_pos,
@@ -19,6 +18,7 @@ GraspStateMachine::GraspStateMachine(const std::array<double, 3>& object_pos,
                                      double grasp_height_offset,
                                      double lift_height,
                                      double table_clearance,
+                                     double table_z,
                                      double grasp_yaw,
                                      int close_steps,
                                      int settle_steps,
@@ -30,6 +30,7 @@ GraspStateMachine::GraspStateMachine(const std::array<double, 3>& object_pos,
       grasp_height_offset_(grasp_height_offset),
       lift_height_(lift_height),
       table_clearance_(table_clearance),
+      table_z_(table_z),
       close_steps_(close_steps),
       settle_steps_(settle_steps),
       lift_steps_(lift_steps),
@@ -81,7 +82,7 @@ void GraspStateMachine::getTarget(const std::array<double, 3>& current_object_po
   auto setTarget = [&](double dx, double dy, double dz, double grip) {
     target_pos = {obj[0] + dx, obj[1] + dy, obj[2] + dz};
     clampAboveTable(target_pos);
-    gripper_qpos = grip;
+    gripper_qpos = grip;approach_height_
   };
 
   if (state_ == "center_xy") {
@@ -121,7 +122,7 @@ void GraspStateMachine::getTarget(const std::array<double, 3>& current_object_po
 }
 
 void GraspStateMachine::clampAboveTable(std::array<double, 3>& target) const {
-  double min_z = kTableZ + table_clearance_;
+  double min_z = table_z_ + table_clearance_;
   if (target[2] < min_z) {
     target[2] = min_z;
   }

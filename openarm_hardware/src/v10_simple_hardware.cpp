@@ -304,30 +304,30 @@ std::array<std::array<double, 2>, OpenArm_v10HW::ARM_DOF>
 OpenArm_v10HW::compute_arm_limits() const {
   if (arm_type_ == "v11") {
     std::array<std::array<double, 2>, ARM_DOF> limits = {{
-        {{-1.5617, 3.1602}},   // joint1
-        {{-0.3099, 2.7923}},   // joint2
-        {{-1.5479, 1.5084}},   // joint3
-        {{0.0, 2.3930}},       // joint4
-        {{-1.5598, 0.9714}},   // joint5
-        {{-0.4999, 0.4942}},   // joint6
-        {{-1.5222, 1.5353}}    // joint7
+        {{-1.6417, 3.2402}},  // joint1
+        {{-2.8723, 0.38}},     // joint2
+        {{-3.136, 0.0}},       // joint3
+        {{0.0, 2.43}},         // joint4
+        {{-2.61, 0.0}},        // joint5
+        {{-0.549, 0.544}},     // joint6
+        {{-1.54, 1.55}}        // joint7
     }};
 
     if (arm_prefix_.find("right_") != std::string::npos) {
-      limits[0][0] = -3.1514;
-      limits[0][1] = 1.5755;
-      limits[1][0] = -2.7700;
-      limits[1][1] = 0.3011;
-      limits[2][0] = -1.6155;
-      limits[2][1] = 1.4586;
-      limits[3][0] = -2.3938;
-      limits[3][1] = 0.0;
-      limits[4][0] = -1.5295;
-      limits[4][1] = 1.0009;
-      limits[5][0] = -0.4746;
-      limits[5][1] = 0.5141;
-      limits[6][0] = -1.5725;
-      limits[6][1] = 1.4777;
+      limits[0][0] = -3.23;
+      limits[0][1] = 1.65;
+      limits[1][0] = -0.376;
+      limits[1][1] = 2.86;
+      limits[2][0] = -3.13;
+      limits[2][1] = 0.0;
+      limits[3][0] = 0.0;
+      limits[3][1] = 2.43;
+      limits[4][0] = -2.6;
+      limits[4][1] = 0.0;
+      limits[5][0] = -0.5246;
+      limits[5][1] = 0.5641;
+      limits[6][0] = -1.54;
+      limits[6][1] = 1.54;
     }
 
     return limits;
