@@ -5,13 +5,9 @@
   <xacro:include filename="$(find openarm_description)/urdf/robot/v11.urdf.xacro"/>
   <xacro:include filename="$(find realsense2_description)/urdf/_d435.urdf.xacro"/>
 
-  <link name="world"/>
-  <joint name="world_to_openarm" type="fixed">
-    <parent link="world"/>
-    <child link="openarm_body_link0"/>
-    <!-- The v11 body mesh extends 0.379 m below its root frame. -->
-    <origin xyz="0 0 0.38" rpy="0 0 0"/>
-  </joint>
+  <!-- world link and its fixed joint now come from v11.urdf.xacro (identity
+       transform). The old world_to_openarm joint carried the +0.38 m mounting
+       height; sim.launch.py compensates via spawn_entity -z instead. -->
 
   <!-- The CAD camera STL has its 90 mm body width on +X. The RealSense macro
        uses +Y for that same body width, so rotate the simulated D435 onto the

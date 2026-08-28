@@ -178,25 +178,57 @@ def robot_nodes_spawner(
     return [robot_state_pub_node, control_node]
 
 
+# def controller_spawner(context: LaunchContext, robot_controller):
+#     robot_controller_str = context.perform_substitution(robot_controller)
+
+#     if robot_controller_str == "forward_position_controller":
+#         left = "left_forward_position_controller"
+#         right = "right_forward_position_controller"
+#     elif robot_controller_str == "joint_trajectory_controller":
+#         left = "left_joint_trajectory_controller"
+#         right = "right_joint_trajectory_controller"
+#     else:
+#         raise ValueError(f"Unknown robot_controller: {robot_controller_str}")
+
+#     return [
+#         Node(
+#             package="controller_manager",
+#             executable="spawner",
+#             arguments=[left, right, "-c", "/controller_manager"],
+#         )
+#     ]
+
 def controller_spawner(context: LaunchContext, robot_controller):
+    """Spawn all controllers individually"""
     robot_controller_str = context.perform_substitution(robot_controller)
-
+    
+    # 确定默认激活的控制器
     if robot_controller_str == "forward_position_controller":
-        left = "left_forward_position_controller"
-        right = "right_forward_position_controller"
-    elif robot_controller_str == "joint_trajectory_controller":
-        left = "left_joint_trajectory_controller"
-        right = "right_joint_trajectory_controller"
+        active_controllers = ["left_forward_position_controller", "right_forward_position_controller"]
+        inactive_controllers = ["left_joint_trajectory_controller", "right_joint_trajectory_controller"]
     else:
-        raise ValueError(f"Unknown robot_controller: {robot_controller_str}")
-
-    return [
-        Node(
+        active_controllers = ["left_joint_trajectory_controller", "right_joint_trajectory_controller"]
+        inactive_controllers = ["left_forward_position_controller", "right_forward_position_controller"]
+    
+    nodes = []
+    
+    # Spawn 并激活主控制器
+    for ctrl in active_controllers:
+        nodes.append(Node(
             package="controller_manager",
             executable="spawner",
-            arguments=[left, right, "-c", "/controller_manager"],
-        )
-    ]
+            arguments=[ctrl, "-c", "/controller_manager", "--activate"],
+        ))
+    
+    # Spawn 但保持非激活的控制器（供后续切换）
+    for ctrl in inactive_controllers:
+        nodes.append(Node(
+            package="controller_manager",
+            executable="spawner",
+            arguments=[ctrl, "-c", "/controller_manager", "--inactive"],
+        ))
+    
+    return nodes
 
 
 def write_zero_torque_param_file(context, gravity_scale, zero_torque_kd):
