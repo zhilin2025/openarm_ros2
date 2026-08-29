@@ -50,6 +50,12 @@ controller_manager:
     right_zero_torque_controller:
       type: openarm_hardware/ZeroTorqueController
 
+    left_forward_effort_controller:
+      type: forward_command_controller/ForwardCommandController
+
+    right_forward_effort_controller:
+      type: forward_command_controller/ForwardCommandController
+
 
 left_forward_position_controller:
   ros__parameters:
@@ -108,7 +114,7 @@ left_joint_trajectory_controller:
     action_monitor_rate: 50.0 # Defaults to 20
 
     open_loop_control: true
-    allow_nonzero_velocity_at_trajectory_end: true
+    allow_nonzero_velocity_at_trajectory_end: false   # 禁止轨迹末端带非零速度，GUI 的五次多项式轨迹本来就是零末速，不受影响
 
     allow_partial_joints_goal: false # Defaults to false
     constraints:
@@ -192,7 +198,7 @@ right_joint_trajectory_controller:
     action_monitor_rate: 50.0 # Defaults to 20
 
     open_loop_control: true
-    allow_nonzero_velocity_at_trajectory_end: true
+    allow_nonzero_velocity_at_trajectory_end: false
 
     allow_partial_joints_goal: false # Defaults to false
     constraints:
@@ -231,8 +237,16 @@ left_zero_torque_controller:
       - openarm_left_joint5
       - openarm_left_joint6
       - openarm_left_joint7
-    kd: 0.3
-    gravity_scale: 0.0
+    kd: 0.0
+    gravity_scale: 1.05
+    coriolis_scale: 1.0
+    coulomb_friction: [0.3, 0.3, 0.2, 0.2, 0.1, 0.1, 0.1]
+    viscous_friction: [0.1, 0.1, 0.05, 0.05, 0.02, 0.02, 0.02]
+    friction_velocity_epsilon: 0.01
+    tau_limits: [20.0, 20.0, 7.0, 7.0, 2.0, 2.0, 2.0]
+    hold_kp: 5.0
+    hold_velocity_threshold: 0.05
+    hold_timeout: 0.5
     robot_description_node: controller_manager
 
 right_zero_torque_controller:
@@ -245,6 +259,46 @@ right_zero_torque_controller:
       - openarm_right_joint5
       - openarm_right_joint6
       - openarm_right_joint7
-    kd: 0.3
-    gravity_scale: 0.0
+    kd: 0.0
+    gravity_scale: 1.05
+    coriolis_scale: 1.0
+    coulomb_friction: [0.3, 0.3, 0.2, 0.2, 0.1, 0.1, 0.1]
+    viscous_friction: [0.1, 0.1, 0.05, 0.05, 0.02, 0.02, 0.02]
+    friction_velocity_epsilon: 0.01
+    tau_limits: [20.0, 20.0, 7.0, 7.0, 2.0, 2.0, 2.0]
+    hold_kp: 5.0
+    hold_velocity_threshold: 0.05
+    hold_timeout: 0.5
     robot_description_node: controller_manager
+
+left_forward_effort_controller:
+  ros__parameters:
+    joints:
+      - openarm_left_joint1
+      - openarm_left_joint2
+      - openarm_left_joint3
+      - openarm_left_joint4
+      - openarm_left_joint5
+      - openarm_left_joint6
+      - openarm_left_joint7
+    interface_name: effort
+    command_interfaces:
+      - effort
+    state_interfaces:
+      - position
+
+right_forward_effort_controller:
+  ros__parameters:
+    joints:
+      - openarm_right_joint1
+      - openarm_right_joint2
+      - openarm_right_joint3
+      - openarm_right_joint4
+      - openarm_right_joint5
+      - openarm_right_joint6
+      - openarm_right_joint7
+    interface_name: effort
+    command_interfaces:
+      - effort
+    state_interfaces:
+      - position

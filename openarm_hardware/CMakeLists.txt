@@ -28,6 +28,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(rs_motor_ros2 REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(pinocchio REQUIRED)
 
 # Find openarm_can library
@@ -71,6 +72,7 @@ ament_target_dependencies(${PROJECT_NAME}
   rclcpp_lifecycle
   rs_motor_ros2
   sensor_msgs
+  std_msgs
 )
 
 target_link_libraries(${PROJECT_NAME} pinocchio::pinocchio)
@@ -107,6 +109,7 @@ ament_export_dependencies(
   rs_motor_ros2
   controller_interface
   sensor_msgs
+  std_msgs
   pinocchio
 )
 

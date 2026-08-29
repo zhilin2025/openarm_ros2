@@ -30,14 +30,12 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
-def write_zero_torque_param_file(context, gravity_scale, zero_torque_kd):
+def write_zero_torque_param_file(context, gravity_scale):
     gravity_scale_value = context.perform_substitution(gravity_scale)
-    zero_torque_kd_value = context.perform_substitution(zero_torque_kd)
     contents = (
         "zero_torque_controller:\n"
         "  ros__parameters:\n"
         f"    gravity_scale: {gravity_scale_value}\n"
-        f"    kd: {zero_torque_kd_value}\n"
     )
     param_path = os.path.join(tempfile.gettempdir(), "openarm_zero_torque_params.yaml")
     with open(param_path, "w", encoding="utf-8") as handle:
@@ -272,8 +270,18 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "gravity_scale",
-            default_value="1.0",
-            description="Gravity compensation scale for zero torque controller (0-1).",
+            default_value="1.05",
+            description="Gravity compensation scale for zero torque controller.",
+        ),
+        DeclareLaunchArgument(
+            "enable_gravity_comp",
+            default_value="true",
+            description="Enable gravity compensation feedforward node (position control mode).",
+        ),
+        DeclareLaunchArgument(
+            "urdf_path",
+            default_value="",
+            description="URDF file path for gravity compensation node (auto-detected if empty).",
         ),
     ]
 
@@ -363,10 +371,41 @@ def generate_launch_description():
                 "-c",
                 "/controller_manager",
                 "--param-file",
-                write_zero_torque_param_file(context, gravity_scale, zero_torque_kd),
+                write_zero_torque_param_file(context, gravity_scale),
                 "--inactive",
             ],
         )]
+    )
+
+    # Forward effort controller — gateway for gravity feedforward torques
+    forward_effort_controller_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=[
+            "forward_effort_controller",
+            "-c",
+            "/controller_manager",
+            "--inactive",
+        ],
+    )
+
+    # Gravity compensation feedforward node (separate from ros2_control, like openarmx architecture)
+    gravity_comp_node_spawner = OpaqueFunction(
+        function=lambda context: [Node(
+            package="openarm_gravity_comp",
+            executable="gravity_comp_node",
+            name="gravity_comp_node",
+            output="screen",
+            parameters=[{
+                "g_scale": float(context.perform_substitution(gravity_scale)),
+                "enable_compensation": True,
+                "verbose": False,
+            }],
+            remappings=[
+                ("torque_commands", "/forward_effort_controller/commands"),
+            ],
+        )] if context.perform_substitution(
+            LaunchConfiguration("enable_gravity_comp")) == "true" else []
     )
 
     # Timing and sequencing
@@ -390,6 +429,16 @@ def generate_launch_description():
         actions=[zero_torque_controller_spawner],
     )
 
+    delayed_forward_effort_controller = TimerAction(
+        period=1.0,
+        actions=[forward_effort_controller_spawner],
+    )
+
+    delayed_gravity_comp_node = TimerAction(
+        period=2.0,
+        actions=[gravity_comp_node_spawner],
+    )
+
     return LaunchDescription(
         declared_arguments + [
             robot_nodes_spawner_func,
@@ -400,5 +449,7 @@ def generate_launch_description():
             delayed_robot_controller,
             delayed_gripper_controller,
             delayed_zero_torque_controller,
+            delayed_forward_effort_controller,
+            delayed_gravity_comp_node,
         ]
     )

@@ -168,11 +168,15 @@ def robot_nodes_spawner(
         parameters=[robot_description_param],
     )
 
+    # controller_manager：不再直接传 robot_description 参数（已弃用，会打 WARN），
+    # 改为订阅 robot_state_publisher 的 /robot_description（CM 侧 transient_local
+    # 订阅，即使 RSP 先启动也能收到）；收到后 CM 才初始化硬件和控制器服务
     control_node = Node(
         package="controller_manager",
         executable="ros2_control_node",
         output="both",
-        parameters=[robot_description_param, controllers_file_str],
+        parameters=[controllers_file_str],
+        remappings=[("~/robot_description", "/robot_description")],
     )
 
     return [robot_state_pub_node, control_node]
@@ -231,18 +235,15 @@ def controller_spawner(context: LaunchContext, robot_controller):
     return nodes
 
 
-def write_zero_torque_param_file(context, gravity_scale, zero_torque_kd):
+def write_zero_torque_param_file(context, gravity_scale):   #覆盖同名参数
     gravity_scale_value = context.perform_substitution(gravity_scale)
-    zero_torque_kd_value = context.perform_substitution(zero_torque_kd)
     contents = (
         "left_zero_torque_controller:\n"
         "  ros__parameters:\n"
         f"    gravity_scale: {gravity_scale_value}\n"
-        f"    kd: {zero_torque_kd_value}\n"
         "right_zero_torque_controller:\n"
         "  ros__parameters:\n"
         f"    gravity_scale: {gravity_scale_value}\n"
-        f"    kd: {zero_torque_kd_value}\n"
     )
     param_path = os.path.join(tempfile.gettempdir(), "openarm_zero_torque_params.yaml")
     with open(param_path, "w", encoding="utf-8") as handle:
@@ -397,7 +398,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "gravity_scale",
-            default_value="1.0",
+            default_value="1.05",
+        ),
+        DeclareLaunchArgument(
+            "enable_gravity_comp",
+            default_value="true",
+            description="Enable gravity compensation feedforward node (position control mode).",
         ),
         DeclareLaunchArgument(
             "controllers_file",
@@ -486,10 +492,70 @@ def generate_launch_description():
                 "-c",
                 "/controller_manager",
                 "--param-file",
-                write_zero_torque_param_file(context, gravity_scale, zero_torque_kd),
+                write_zero_torque_param_file(context, gravity_scale),
                 "--inactive",
             ],
         )]
+    )
+
+    # Forward effort controllers — gateway for gravity feedforward torques (bimanual)
+    # Only spawned (and activated) when gravity compensation is enabled:
+    # gravity_comp_node publishes to their commands topic, and an inactive
+    # controller never runs update(), so its feedforward torques would be dropped.
+    forward_effort_spawner = OpaqueFunction(
+        function=lambda context: [Node(
+            package="controller_manager",
+            executable="spawner",
+            arguments=[
+                "left_forward_effort_controller",
+                "right_forward_effort_controller",
+                "-c",
+                "/controller_manager",
+            ],
+        )] if context.perform_substitution(
+            LaunchConfiguration("enable_gravity_comp")) == "true" else []   
+    )
+
+    # Gravity compensation feedforward node (separate from ros2_control, like openarmx architecture)
+    gravity_comp_node_spawner = OpaqueFunction(
+        function=lambda context: [Node(
+            package="openarm_gravity_comp",
+            executable="gravity_comp_node",
+            name="gravity_comp_node",
+            output="screen",
+            parameters=[{
+                "g_scale": float(context.perform_substitution(gravity_scale)),
+                "enable_compensation": True,
+                "verbose": False,
+                "joint_names": [
+                    "openarm_left_joint1", "openarm_left_joint2", "openarm_left_joint3",
+                    "openarm_left_joint4", "openarm_left_joint5", "openarm_left_joint6",
+                    "openarm_left_joint7",
+                ],
+            }],
+            remappings=[
+                ("torque_commands", "/left_forward_effort_controller/commands"),
+            ],
+        ), Node(
+            package="openarm_gravity_comp",
+            executable="gravity_comp_node",
+            name="gravity_comp_node_right",
+            output="screen",
+            parameters=[{
+                "g_scale": float(context.perform_substitution(gravity_scale)),
+                "enable_compensation": True,
+                "verbose": False,
+                "joint_names": [
+                    "openarm_right_joint1", "openarm_right_joint2", "openarm_right_joint3",
+                    "openarm_right_joint4", "openarm_right_joint5", "openarm_right_joint6",
+                    "openarm_right_joint7",
+                ],
+            }],
+            remappings=[
+                ("torque_commands", "/right_forward_effort_controller/commands"),
+            ],
+        )] if context.perform_substitution(
+            LaunchConfiguration("enable_gravity_comp")) == "true" else []
     )
 
     delayed_jsb = TimerAction(period=2.0, actions=[jsb_spawner])
@@ -497,6 +563,8 @@ def generate_launch_description():
         period=1.0, actions=[controller_spawner_func])
     delayed_gripper = TimerAction(period=1.0, actions=[gripper_spawner])
     delayed_zero_torque = TimerAction(period=1.0, actions=[zero_torque_spawner])
+    delayed_forward_effort = TimerAction(period=1.0, actions=[forward_effort_spawner])
+    delayed_gravity_comp = TimerAction(period=2.0, actions=[gravity_comp_node_spawner])
 
     moveit_nodes_spawner_func = OpaqueFunction(
         function=moveit_nodes_spawner,
@@ -530,6 +598,8 @@ def generate_launch_description():
             delayed_arm_ctrl,
             delayed_gripper,
             delayed_zero_torque,
+            delayed_forward_effort,
+            delayed_gravity_comp,
             moveit_nodes_spawner_func,
         ]
     )

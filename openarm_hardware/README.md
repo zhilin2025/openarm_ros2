@@ -29,3 +29,9 @@ OpenArm_v10HW是ros2_control加载的硬件接口插件，随硬件始终运行�
        cmd_pos = pos_states ← 当前位置（hold）
        cmd_tau = tau_commands_[i] ← 重力补偿力矩（由控制器写入）
        → CAN发送: {Kp=0, Kd=0.3, pos=当前位置, tau=重力力矩}
+
+### 力矩补偿的两个地方实现 
+   → motion模式下 controllers 是 JTC + forward_effort，teach模式下 controllers 是 zero_torque
+   → 注意：forward_effort_controller 是可选的，根据是否需要重力补偿添加。
+   → 即motion模式下，由gravity_comp_node节点计算位置控制时所需的重力补偿前馈，发布到forward_effort_controller，然后到硬件层的tau_commands_，配合JTC的输入，最终形成完整MIT控制指令
+   → 然后切换到teach模式下的时候，停掉了JTC和FEC控制器，由zero_torque_controller插件直接做示教模式下的完整力矩计算，发布到tau_commands_，然后配合其他预设参数，最终形成完整MIT控制指令(详情见 v10_simple_hardware.cpp的写入模块)

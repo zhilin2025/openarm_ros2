@@ -460,16 +460,22 @@ hardware_interface::return_type OpenArm_v10HW::prepare_command_mode_switch(
     const std::vector<std::string>& start_interfaces,
     const std::vector<std::string>& /*stop_interfaces*/) {
   bool wants_effort = false;
+  bool wants_position = false;
   for (const auto& iface : start_interfaces) {
     if (iface.find("effort") != std::string::npos) {
       wants_effort = true;
-      break;
+    }
+    if (iface.find("position") != std::string::npos) {
+      wants_position = true;
     }
   }
 
-  if (wants_effort) {
+  if (wants_effort && !wants_position) {
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-                "Preparing switch to effort (zero-torque) mode");
+                "Preparing switch to effort (zero-torque/teaching) mode");
+  } else if (wants_effort && wants_position) {
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Preparing switch to feedforward mode (position control + effort feedforward)");
   }
   return hardware_interface::return_type::OK;
 }
@@ -477,34 +483,49 @@ hardware_interface::return_type OpenArm_v10HW::prepare_command_mode_switch(
 hardware_interface::return_type OpenArm_v10HW::perform_command_mode_switch(
     const std::vector<std::string>& start_interfaces,
     const std::vector<std::string>& stop_interfaces) {
-  bool starting_effort = false;
-  bool stopping_effort = false;
-
+  // Track currently claimed interface counts across all mode switches.
+  // This allows us to distinguish between:
+  //   - Feedforward mode: position + effort both claimed (JTC + forward_effort_controller)
+  //   - Teaching mode:    only effort claimed (ZeroTorqueController), position not claimed
   for (const auto& iface : start_interfaces) {
+    if (iface.find("position") != std::string::npos) {
+      position_interfaces_claimed_++;
+    }
     if (iface.find("effort") != std::string::npos) {
-      starting_effort = true;
-      break;
+      effort_interfaces_claimed_++;
     }
   }
   for (const auto& iface : stop_interfaces) {
+    if (iface.find("position") != std::string::npos) {
+      position_interfaces_claimed_--;
+    }
     if (iface.find("effort") != std::string::npos) {
-      stopping_effort = true;
-      break;
+      effort_interfaces_claimed_--;
     }
   }
 
-  if (starting_effort && !effort_mode_) {
+  // Teaching (zero-torque) mode only when effort is claimed AND position is NOT claimed.
+  // When both are claimed, we're in feedforward mode (position control + gravity feedforward).
+  const bool should_be_effort_mode =
+      (effort_interfaces_claimed_ > 0) && (position_interfaces_claimed_ == 0);
+
+  if (should_be_effort_mode && !effort_mode_) {
     effort_mode_ = true;
     sync_commands_to_current_state();
     RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
-                "Switched to effort mode (Kp=0, Kd=%.3f)", zero_torque_kd_);
+                "Switched to effort/teaching mode (Kp=0, Kd=%.3f)", zero_torque_kd_);
   }
 
-  if (stopping_effort && effort_mode_) {
+  if (!should_be_effort_mode && effort_mode_) {
     effort_mode_ = false;
     sync_commands_to_current_state();
-    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-                "Switched to position mode");
+    if (effort_interfaces_claimed_ > 0) {
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                  "Switched to position+feedforward mode (gravity feedforward active)");
+    } else {
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                  "Switched to position mode");
+    }
   }
 
   return hardware_interface::return_type::OK;

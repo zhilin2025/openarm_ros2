@@ -39,6 +39,9 @@ controller_manager:
     zero_torque_controller:
       type: openarm_hardware/ZeroTorqueController
 
+    forward_effort_controller:
+      type: forward_command_controller/ForwardCommandController
+
 # 简单的位置控制器，作用是 “把上层发来的位置命令直接转发给硬件”，不做任何轨迹规划或平滑处理
 forward_position_controller:
   ros__parameters:
@@ -132,6 +135,33 @@ zero_torque_controller:
       - openarm_joint5
       - openarm_joint6
       - openarm_joint7
-    kd: 0.3
-    gravity_scale: 1.0
+    kd: 0.0                       # Controller-level damping (hardware zero_torque_kd=0.3 provides motor-level damping)
+    gravity_scale: 1.05           # Slightly over 1.0 to compensate unmodeled effects (borrowed from openarmx)
+    coriolis_scale: 1.0           # Coriolis compensation (set 0.0 for slow-speed teaching)
+    coulomb_friction: [0.3, 0.3, 0.2, 0.2, 0.1, 0.1, 0.1]     # Coulomb friction per joint [Nm] (to be calibrated)
+    viscous_friction: [0.1, 0.1, 0.05, 0.05, 0.02, 0.02, 0.02] # Viscous friction per joint [Nm·s/rad] (to be calibrated)
+    friction_velocity_epsilon: 0.01  # tanh smoothing width [rad/s]
+    tau_limits: [20.0, 20.0, 7.0, 7.0, 2.0, 2.0, 2.0]         # Per-joint torque limits [Nm] (borrowed from openarmx)
+    hold_kp: 5.0                  # Position hold gain when arm is released (0.0 = disabled)
+    hold_velocity_threshold: 0.05 # Velocity threshold for hold activation [rad/s]
+    hold_timeout: 0.5             # Time below threshold before hold activates [s]
     robot_description_node: controller_manager
+
+# Forward effort controller — gateway for gravity_comp_node feedforward torques
+# In position mode: JTC writes position/velocity, this controller writes effort (gravity feedforward)
+# In teaching mode: this controller is deactivated, ZeroTorqueController takes over effort interface
+forward_effort_controller:
+  ros__parameters:
+    joints:
+      - openarm_joint1
+      - openarm_joint2
+      - openarm_joint3
+      - openarm_joint4
+      - openarm_joint5
+      - openarm_joint6
+      - openarm_joint7
+    interface_name: effort
+    command_interfaces:
+      - effort
+    state_interfaces:
+      - position

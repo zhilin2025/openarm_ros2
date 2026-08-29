@@ -139,6 +139,12 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
 
   std::atomic<bool> effort_mode_{false};
   double zero_torque_kd_{0.3};
+
+  // Interface claim tracking for mode switch logic
+  // effort_mode is only activated when effort is claimed AND position is NOT claimed
+  // This allows forward_effort_controller (gravity feedforward) to coexist with JTC
+  int position_interfaces_claimed_{0};
+  int effort_interfaces_claimed_{0};
   double limit_margin_{0.1};        // 软限位的“减速区”宽度(rad)，进入该区且力矩继续往限位方向推时，力矩会被按比例缩小
   double limit_stop_margin_{0.02};  // 软限位的“停止区”宽度(rad)，进入该区且力矩为0时，力矩会被保持在0
   double limit_decel_factor_{0.2};  // 减速区内的缩放比例（0~1），0.2 指只保留 20% 的力矩
