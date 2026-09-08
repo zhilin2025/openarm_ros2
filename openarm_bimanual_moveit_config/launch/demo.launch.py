@@ -235,16 +235,39 @@ def controller_spawner(context: LaunchContext, robot_controller):
     return nodes
 
 
-def write_zero_torque_param_file(context, gravity_scale):   #覆盖同名参数
+def write_zero_torque_param_file(context, gravity_scale, enable_compensation):
     gravity_scale_value = context.perform_substitution(gravity_scale)
-    contents = (
-        "left_zero_torque_controller:\n"
-        "  ros__parameters:\n"
-        f"    gravity_scale: {gravity_scale_value}\n"
-        "right_zero_torque_controller:\n"
-        "  ros__parameters:\n"
-        f"    gravity_scale: {gravity_scale_value}\n"
-    )
+    compensation_enabled = context.perform_substitution(enable_compensation) == "true"
+
+    if compensation_enabled:
+        contents = (
+            "left_zero_torque_controller:\n"
+            "  ros__parameters:\n"
+            f"    gravity_scale: {gravity_scale_value}\n"
+            "right_zero_torque_controller:\n"
+            "  ros__parameters:\n"
+            f"    gravity_scale: {gravity_scale_value}\n"
+        )
+    else:
+        # Pure zero-torque mode: disable all compensation
+        contents = (
+            "left_zero_torque_controller:\n"
+            "  ros__parameters:\n"
+            "    gravity_scale: 0.0\n"
+            "    coriolis_scale: 0.0\n"
+            "    kd: 0.0\n"
+            "    coulomb_friction: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]\n"
+            "    viscous_friction: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]\n"
+            "    hold_kp: 0.0\n"
+            "right_zero_torque_controller:\n"
+            "  ros__parameters:\n"
+            "    gravity_scale: 0.0\n"
+            "    coriolis_scale: 0.0\n"
+            "    kd: 0.0\n"
+            "    coulomb_friction: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]\n"
+            "    viscous_friction: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]\n"
+            "    hold_kp: 0.0\n"
+        )
     param_path = os.path.join(tempfile.gettempdir(), "openarm_zero_torque_params.yaml")
     with open(param_path, "w", encoding="utf-8") as handle:
         handle.write(contents)
@@ -271,34 +294,21 @@ def moveit_nodes_spawner(
     limit_decel_factor,
     zero_torque_kd,
 ):
-    robot_description = generate_robot_description(
-        context,
-        description_package,
-        description_file,
-        arm_type,
-        use_fake_hardware,
-        right_can_interface,
-        left_can_interface,
-        arm_prefix,
-        motor_backend,
-        robstride_master_id,
-        robstride_joint_ids,
-        robstride_joint_types,
-        robstride_gripper_id,
-        robstride_gripper_type,
-        auto_return_to_zero_on_activate,
-        limit_margin,
-        limit_stop_margin,
-        limit_decel_factor,
-        zero_torque_kd,
-    )
-
-    # MoveItConfigsBuilder会自动家在config文件夹下的所有yaml文件，并将其转换为MoveIt配置参数字典。
+    # MoveIt must use the bimanual wrapper so its URDF root name matches the
+    # bimanual SRDF. The hardware/state-publisher description above still uses
+    # the concrete v10/v11 robot file because it contains ros2_control.
+    arm_type_str = context.perform_substitution(arm_type)
     moveit_config = MoveItConfigsBuilder(
         "openarm", package_name="openarm_bimanual_moveit_config"
+    ).robot_description(
+        file_path="config/openarm_bimanual.urdf.xacro",
+        mappings={"arm_type": arm_type_str, "bimanual": "true"},
+    ).robot_description_semantic(
+        file_path="config/openarm_bimanual.srdf"
+    ).joint_limits(
+        file_path="config/joint_limits.yaml"
     ).to_moveit_configs()
     moveit_params = moveit_config.to_dict()
-    moveit_params["robot_description"] = robot_description
 
     # Extend execution monitoring timeout to prevent move_group from
     # preempting trajectories on real hardware.  Default scaling is 2.0,
@@ -347,7 +357,7 @@ def generate_launch_description():
             "description_file",
             default_value="v10.urdf.xacro",
         ),
-        DeclareLaunchArgument("arm_type", default_value="v10"),
+        DeclareLaunchArgument("arm_type", default_value="v11"),
         DeclareLaunchArgument("use_fake_hardware", default_value="false"),
         DeclareLaunchArgument(
             "robot_controller",
@@ -402,8 +412,14 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "enable_gravity_comp",
-            default_value="true",
+            default_value="false",
             description="Enable gravity compensation feedforward node (position control mode).",
+        ),
+        DeclareLaunchArgument(
+            "enable_zero_torque_compensation",
+            default_value="false",
+            description="Enable dynamics compensation in zero-torque/teaching mode. "
+                        "false = pure zero-torque (no gravity/friction/coriolis compensation).",
         ),
         DeclareLaunchArgument(
             "controllers_file",
@@ -492,7 +508,7 @@ def generate_launch_description():
                 "-c",
                 "/controller_manager",
                 "--param-file",
-                write_zero_torque_param_file(context, gravity_scale),
+                write_zero_torque_param_file(context, gravity_scale, LaunchConfiguration("enable_zero_torque_compensation")),
                 "--inactive",
             ],
         )]

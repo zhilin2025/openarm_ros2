@@ -186,12 +186,15 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
 
   // Temporary write inhibit window used after auto homing to avoid abrupt
   // mode handover while controllers are still being activated.
-  std::chrono::steady_clock::time_point inhibit_robstride_write_until_ =
-      std::chrono::steady_clock::time_point::min();
+    std::chrono::steady_clock::time_point inhibit_robstride_write_until_ =
+        std::chrono::steady_clock::time_point::min();
+    bool feedback_blocked_logged_ = false;
+    bool initial_commands_synced_ = false;
 
   // Helper methods
   void return_to_zero();
     void sync_commands_to_current_state();
+    bool robstride_feedback_ready() const;
     void return_to_zero_damiao();
     void return_to_zero_robstride();
 

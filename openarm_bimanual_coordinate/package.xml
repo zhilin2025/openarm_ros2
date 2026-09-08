@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>openarm_bimanual_coordinate</name>
+  <version>0.1.0</version>
+  <description>
+    Bimanual cooperative carrying for OpenArm v11 in Gazebo: perception-driven
+    grasp decision for both arms, synchronized dual-arm MoveIt planning and
+    execution, and a Gazebo grasp plugin that welds the object to the hands.
+  </description>
+  <maintainer email="dev@example.com">OpenArm Bimanual</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Grasp plugin -->
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>gazebo_ros</depend>
+  <depend>gazebo_dev</depend>
+  <depend>geometry_msgs</depend>
+
+  <!-- Python perception / coordination nodes -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>vision_msgs</exec_depend>
+  <exec_depend>tf2_ros_py</exec_depend>
+  <exec_depend>moveit_msgs</exec_depend>
+  <exec_depend>control_msgs</exec_depend>
+  <exec_depend>trajectory_msgs</exec_depend>
+  <exec_depend>shape_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>openarm_gazebo_sim</exec_depend>
+  <exec_depend>openarm_bimanual_moveit_config</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

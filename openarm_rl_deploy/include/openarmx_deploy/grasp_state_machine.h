@@ -21,7 +21,7 @@ class GraspStateMachine {
                     int close_steps = 30,
                     int settle_steps = 20,
                     int lift_steps = 40,
-                    double gripper_open = 0.042,
+                    double gripper_open = -0.042,
                     double gripper_close = 0.0);
 
   /// 根据位姿误差推进状态机

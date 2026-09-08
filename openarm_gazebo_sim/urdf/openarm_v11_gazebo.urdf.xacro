@@ -13,7 +13,7 @@
        uses +Y for that same body width, so rotate the simulated D435 onto the
        v11 CAD mounting frame. -->
   <xacro:sensor_d435
-    parent="camera_Link"
+    parent="openarm_camera_link0"
     name="camera"
     use_nominal_extrinsics="true"
     add_plug="false"
@@ -73,6 +73,11 @@
     <self_collide>false</self_collide>
     <plugin filename="libgazebo_ros2_control.so" name="openarm_gazebo_ros2_control">
       <parameters>$(find openarm_gazebo_sim)/config/controllers.yaml</parameters>
+    </plugin>
+    <!-- Command-driven object welding for the bimanual carry demo
+         (openarm_bimanual_coordinate). -->
+    <plugin filename="libbimanual_grasp_plugin.so" name="bimanual_grasp">
+      <ros><namespace>/bimanual_grasp</namespace></ros>
     </plugin>
   </gazebo>
 

@@ -303,31 +303,33 @@ void OpenArm_v10HW::generate_joint_names() {
 std::array<std::array<double, 2>, OpenArm_v10HW::ARM_DOF>
 OpenArm_v10HW::compute_arm_limits() const {
   if (arm_type_ == "v11") {
+    // V11 left arm limits (from v11.urdf.xacro)
     std::array<std::array<double, 2>, ARM_DOF> limits = {{
-        {{-1.6417, 3.2402}},  // joint1
-        {{-2.8723, 0.38}},     // joint2
-        {{-3.136, 0.0}},       // joint3
-        {{0.0, 2.43}},         // joint4
-        {{-2.61, 0.0}},        // joint5
-        {{-0.549, 0.544}},     // joint6
-        {{-1.54, 1.55}}        // joint7
+        {{-1.65, 3.21}},    // joint1
+        {{-0.36, 2.85}},    // joint2
+        {{-1.56, 1.56}},    // joint3
+        {{0.0, 2.43}},      // joint4
+        {{-1.56, 1.56}},    // joint5
+        {{-0.6, 0.6}},      // joint6
+        {{-1.56, 1.56}}     // joint7
     }};
 
+    // V11 right arm limits (from v11.urdf.xacro)
     if (arm_prefix_.find("right_") != std::string::npos) {
-      limits[0][0] = -3.23;
+      limits[0][0] = -3.21;
       limits[0][1] = 1.65;
-      limits[1][0] = -0.376;
-      limits[1][1] = 2.86;
-      limits[2][0] = -3.13;
-      limits[2][1] = 0.0;
-      limits[3][0] = 0.0;
-      limits[3][1] = 2.43;
-      limits[4][0] = -2.6;
-      limits[4][1] = 0.0;
-      limits[5][0] = -0.5246;
-      limits[5][1] = 0.5641;
-      limits[6][0] = -1.54;
-      limits[6][1] = 1.54;
+      limits[1][0] = -2.85;
+      limits[1][1] = 0.36;
+      limits[2][0] = -1.56;
+      limits[2][1] = 1.56;
+      limits[3][0] = -2.43;
+      limits[3][1] = 0.0;
+      limits[4][0] = -1.56;
+      limits[4][1] = 1.56;
+      limits[5][0] = -0.6;
+      limits[5][1] = 0.6;
+      limits[6][0] = -1.56;
+      limits[6][1] = 1.56;
     }
 
     return limits;
@@ -458,7 +460,7 @@ OpenArm_v10HW::export_command_interfaces() {
 
 hardware_interface::return_type OpenArm_v10HW::prepare_command_mode_switch(
     const std::vector<std::string>& start_interfaces,
-    const std::vector<std::string>& /*stop_interfaces*/) {
+    const std::vector<std::string>& stop_interfaces) {
   bool wants_effort = false;
   bool wants_position = false;
   for (const auto& iface : start_interfaces) {
@@ -469,6 +471,14 @@ hardware_interface::return_type OpenArm_v10HW::prepare_command_mode_switch(
       wants_position = true;
     }
   }
+
+  // Debug: log all interface names
+  std::string start_str, stop_str;
+  for (const auto& s : start_interfaces) start_str += s + ", ";
+  for (const auto& s : stop_interfaces) stop_str += s + ", ";
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "prepare_command_mode_switch: start=[%s] stop=[%s]",
+              start_str.c_str(), stop_str.c_str());
 
   if (wants_effort && !wants_position) {
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
@@ -483,31 +493,61 @@ hardware_interface::return_type OpenArm_v10HW::prepare_command_mode_switch(
 hardware_interface::return_type OpenArm_v10HW::perform_command_mode_switch(
     const std::vector<std::string>& start_interfaces,
     const std::vector<std::string>& stop_interfaces) {
+  // Filter interfaces: only count those belonging to THIS hardware instance.
+  // In bimanual setups, the resource manager passes ALL interfaces from ALL
+  // hardware instances to each instance's perform_command_mode_switch.
+  const std::string my_prefix = "openarm_" + arm_prefix_;
+
+  // A controller switch must never be allowed to expose position interfaces
+  // while the hardware is still using the initial/stale 0.0 state cache.
+  // Otherwise sync_commands_to_current_state() would turn that cache into a
+  // real position target and the enabled motors could move toward it.
+  if (motor_backend_ == MotorBackend::kRobStride &&
+      !robstride_feedback_ready()) {
+    RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                 "[%s] Rejecting controller switch: RobStride feedback is "
+                 "not valid and fresh for every motor",
+                 arm_prefix_.c_str());
+    return hardware_interface::return_type::ERROR;
+  }
+
+  // On ANY controller switch, sync commands to current state first.
+  // This prevents a position discontinuity (arm jump) when switching controllers,
+  // which could cause motor errors and CAN bus failure.
+  if (!start_interfaces.empty() || !stop_interfaces.empty()) {
+    sync_commands_to_current_state();
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "[%s] Mode switch: synced commands to current state", arm_prefix_.c_str());
+  }
+
   // Track currently claimed interface counts across all mode switches.
   // This allows us to distinguish between:
   //   - Feedforward mode: position + effort both claimed (JTC + forward_effort_controller)
   //   - Teaching mode:    only effort claimed (ZeroTorqueController), position not claimed
   for (const auto& iface : start_interfaces) {
-    if (iface.find("position") != std::string::npos) {
-      position_interfaces_claimed_++;
-    }
-    if (iface.find("effort") != std::string::npos) {
-      effort_interfaces_claimed_++;
-    }
+    if (iface.find(my_prefix) == std::string::npos) continue;
+    if (iface.find("position") != std::string::npos) position_interfaces_claimed_++;
+    if (iface.find("effort") != std::string::npos) effort_interfaces_claimed_++;
   }
   for (const auto& iface : stop_interfaces) {
-    if (iface.find("position") != std::string::npos) {
-      position_interfaces_claimed_--;
-    }
-    if (iface.find("effort") != std::string::npos) {
-      effort_interfaces_claimed_--;
-    }
+    if (iface.find(my_prefix) == std::string::npos) continue;
+    if (iface.find("position") != std::string::npos) position_interfaces_claimed_--;
+    if (iface.find("effort") != std::string::npos) effort_interfaces_claimed_--;
   }
+
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "[%s] perform_command_mode_switch: start=%zu stop=%zu => "
+              "pos_claimed=%d effort_claimed=%d",
+              arm_prefix_.c_str(), start_interfaces.size(), stop_interfaces.size(),
+              position_interfaces_claimed_, effort_interfaces_claimed_);
 
   // Teaching (zero-torque) mode only when effort is claimed AND position is NOT claimed.
   // When both are claimed, we're in feedforward mode (position control + gravity feedforward).
+  // Note: gripper controller always holds 1 position interface, so subtract it from the count.
+  const int gripper_position_claims = (hand_ && robstride_gripper_motor_) ? 1 : 0;
   const bool should_be_effort_mode =
-      (effort_interfaces_claimed_ > 0) && (position_interfaces_claimed_ == 0);
+      (effort_interfaces_claimed_ > 0) &&
+      (position_interfaces_claimed_ <= gripper_position_claims);
 
   if (should_be_effort_mode && !effort_mode_) {
     effort_mode_ = true;
@@ -564,11 +604,26 @@ hardware_interface::return_type OpenArm_v10HW::write(
   const auto arm_limits = compute_arm_limits();
 
   for (size_t i = 0; i < ARM_DOF && i < pos_commands_.size(); ++i) {
+    if (!std::isfinite(pos_commands_[i])) {
+      RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                   "[%s] Refusing non-finite position command for joint%zu",
+                   arm_prefix_.c_str(), i + 1);
+      return hardware_interface::return_type::ERROR;
+    }
     pos_commands_[i] = std::clamp(pos_commands_[i], arm_limits[i][0], arm_limits[i][1]);
   }
   
   if (hand_ && pos_commands_.size() > ARM_DOF) {
-    pos_commands_[ARM_DOF] = std::clamp(pos_commands_[ARM_DOF], 0.0, 0.044);
+    if (!std::isfinite(pos_commands_[ARM_DOF])) {
+      RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                   "[%s] Refusing non-finite gripper position command",
+                   arm_prefix_.c_str());
+      return hardware_interface::return_type::ERROR;
+    }
+    const double gripper_lower = arm_type_ == "v11" ? -0.044 : 0.0;
+    const double gripper_upper = arm_type_ == "v11" ? 0.0 : 0.044;
+    pos_commands_[ARM_DOF] = std::clamp(
+        pos_commands_[ARM_DOF], gripper_lower, gripper_upper);
   }
   // -----------------------------------------------------------
 
@@ -588,10 +643,29 @@ void OpenArm_v10HW::return_to_zero() {
 
 void OpenArm_v10HW::sync_commands_to_current_state() {    // 将当前状态同步到命令向量，避免模式切换时的突变
   for (size_t i = 0; i < pos_commands_.size() && i < pos_states_.size(); ++i) {
+    if (!std::isfinite(pos_states_[i])) {
+      return;
+    }
     pos_commands_[i] = pos_states_[i];
     vel_commands_[i] = 0.0;
     tau_commands_[i] = 0.0;
   }
+}
+
+bool OpenArm_v10HW::robstride_feedback_ready() const {
+  constexpr auto kMaxFeedbackAge = std::chrono::milliseconds(250);
+  for (const auto& motor : robstride_arm_motors_) {
+    if (!motor || !motor->status_is_fresh(kMaxFeedbackAge)) {
+      return false;
+    }
+  }
+  if (hand_) {
+    if (!robstride_gripper_motor_ ||
+        !robstride_gripper_motor_->status_is_fresh(kMaxFeedbackAge)) {
+      return false;
+    }
+  }
+  return !robstride_arm_motors_.empty();
 }
 
 bool OpenArm_v10HW::init_damiao_backend() {
@@ -650,12 +724,9 @@ hardware_interface::CallbackReturn OpenArm_v10HW::configure_damiao_backend() {
 }
 
 hardware_interface::CallbackReturn OpenArm_v10HW::configure_robstride_backend() {
-  for (auto& motor : robstride_arm_motors_) {
-    motor->receive_status_frame(0.01);
-  }
-  if (hand_ && robstride_gripper_motor_) {
-    robstride_gripper_motor_->receive_status_frame(0.01);
-  }
+  // Motors are not enabled yet, so waiting for status frames here produces
+  // misleading timeouts. Initial feedback is validated after enable in the
+  // first read cycle instead.
   return CallbackReturn::SUCCESS;
 }
 
@@ -729,21 +800,59 @@ hardware_interface::CallbackReturn OpenArm_v10HW::activate_robstride_backend() {
     }
   };
 
+  auto disable_all_robstride_motors = [this]() {
+    for (auto& motor : robstride_arm_motors_) {
+      if (motor) {
+        motor->Disenable_Motor(0);
+      }
+    }
+    if (hand_ && robstride_gripper_motor_) {
+      robstride_gripper_motor_->Disenable_Motor(0);
+    }
+  };
+
   for (auto& motor : robstride_arm_motors_) {
-    motor->Get_RobStrite_Motor_parameter(0x7005);
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (!motor->ensure_motion_control_mode()) {
+      RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                   "RobStride motor failed to enter MIT motion-control mode "
+                   "during activation; refusing to activate hardware.");
+      disable_all_robstride_motors();
+      return CallbackReturn::ERROR;
+    }
     motor->enable_motor();
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
   if (hand_ && robstride_gripper_motor_) {
-    robstride_gripper_motor_->Get_RobStrite_Motor_parameter(0x7005);
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (!robstride_gripper_motor_->ensure_motion_control_mode()) {
+      RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                   "RobStride gripper failed to enter MIT motion-control "
+                   "mode during activation; refusing to activate hardware.");
+      disable_all_robstride_motors();
+      return CallbackReturn::ERROR;
+    }
     robstride_gripper_motor_->enable_motor();
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
-  (void)read_robstride_backend();
+  // Do not report an active hardware component while its state feedback is
+  // missing. Otherwise controllers can appear ready and only fail later when
+  // teleoperation starts. Give the bus a short bounded window to provide one
+  // fresh status frame from every motor.
+  const auto feedback_deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+  while (!robstride_feedback_ready() &&
+         std::chrono::steady_clock::now() < feedback_deadline) {
+    (void)read_robstride_backend();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (!robstride_feedback_ready()) {
+    RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                 "RobStride activation aborted: no fresh feedback from every "
+                 "configured motor within 1000 ms.");
+    disable_all_robstride_motors();
+    return CallbackReturn::ERROR;
+  }
 
   if (auto_return_to_zero_on_activate_) {
     return_to_zero();
@@ -891,6 +1000,15 @@ hardware_interface::return_type OpenArm_v10HW::read_robstride_backend() {
     tau_states_[ARM_DOF] = robstride_gripper_motor_->torque_;
   }
 
+  if (!initial_commands_synced_ && robstride_feedback_ready()) {
+    sync_commands_to_current_state();
+    initial_commands_synced_ = true;
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "[%s] Initial RobStride feedback is valid; latched command "
+                "positions to measured state",
+                arm_prefix_.c_str());
+  }
+
   return hardware_interface::return_type::OK;
 }
 
@@ -945,6 +1063,18 @@ hardware_interface::return_type OpenArm_v10HW::write_robstride_backend() {
   if (std::chrono::steady_clock::now() < inhibit_robstride_write_until_) {
     return hardware_interface::return_type::OK;
   }
+
+  if (!robstride_feedback_ready()) {
+    if (!feedback_blocked_logged_) {
+      RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                   "[%s] Motion output inhibited: RobStride feedback is not "
+                   "valid/fresh for every motor",
+                   arm_prefix_.c_str());
+      feedback_blocked_logged_ = true;
+    }
+    return hardware_interface::return_type::OK;
+  }
+  feedback_blocked_logged_ = false;
 
   const bool effort_mode = effort_mode_.load();
   const auto arm_limits = compute_arm_limits();
@@ -1039,16 +1169,20 @@ void OpenArm_v10HW::return_to_zero_robstride() {
 
 // Gripper mapping helper functions
 double OpenArm_v10HW::joint_to_motor_radians(double joint_value) {
-  // Joint 0=closed -> motor 0 rad, Joint 0.044=open -> motor -1.0472 rad
-  return (joint_value / GRIPPER_JOINT_0_POSITION) *
-         GRIPPER_MOTOR_1_RADIANS;  // Scale from 0-0.044 to 0 to -1.0472
+  // V10: joint 0.044=open; V11: joint -0.044=open.
+  // Both map to the same motor open position (-1.0472 rad).
+  const double open_joint =
+      arm_type_ == "v11" ? -GRIPPER_JOINT_0_POSITION
+                         : GRIPPER_JOINT_0_POSITION;
+  return (joint_value / open_joint) * GRIPPER_MOTOR_1_RADIANS;
 }
 
 double OpenArm_v10HW::motor_radians_to_joint(double motor_radians) {
-  // Motor 0 rad=closed -> joint 0, Motor -1.0472 rad=open -> joint 0.044
-  return GRIPPER_JOINT_0_POSITION *
-         (motor_radians /
-          GRIPPER_MOTOR_1_RADIANS);  // Scale from 0 to -1.0472 to 0-0.044
+  // Motor 0 rad=closed; Motor -1.0472 rad=open.
+  const double open_joint =
+      arm_type_ == "v11" ? -GRIPPER_JOINT_0_POSITION
+                         : GRIPPER_JOINT_0_POSITION;
+  return open_joint * (motor_radians / GRIPPER_MOTOR_1_RADIANS);
 }
 
 }  // namespace openarm_hardware

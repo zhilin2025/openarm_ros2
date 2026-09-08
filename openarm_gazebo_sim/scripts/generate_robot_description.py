@@ -43,20 +43,22 @@ def add_minimal_inertial(document, link):
     ):
         return
 
+    # 50 g (not 1 g): the grasp plugin welds the object to these links and a
+    # too-light welded body destabilises ODE, flinging the object away
     inertial = document.createElement("inertial")
     origin = document.createElement("origin")
     origin.setAttribute("xyz", "0 0 0")
     origin.setAttribute("rpy", "0 0 0")
     mass = document.createElement("mass")
-    mass.setAttribute("value", "0.001")
+    mass.setAttribute("value", "0.05")
     inertia = document.createElement("inertia")
     for attribute, value in {
-        "ixx": "1e-6",
+        "ixx": "5e-4",
         "ixy": "0",
         "ixz": "0",
-        "iyy": "1e-6",
+        "iyy": "5e-4",
         "iyz": "0",
-        "izz": "1e-6",
+        "izz": "5e-4",
     }.items():
         inertia.setAttribute(attribute, value)
 

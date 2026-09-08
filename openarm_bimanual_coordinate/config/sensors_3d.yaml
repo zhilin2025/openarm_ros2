@@ -1,0 +1,3 @@
+# Disable the MoveIt octomap sensor pipeline: the carry node plans against an
+# explicit table collision object instead of a live depth octomap.
+sensors: []

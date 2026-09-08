@@ -82,7 +82,7 @@ void GraspStateMachine::getTarget(const std::array<double, 3>& current_object_po
   auto setTarget = [&](double dx, double dy, double dz, double grip) {
     target_pos = {obj[0] + dx, obj[1] + dy, obj[2] + dz};
     clampAboveTable(target_pos);
-    gripper_qpos = grip;approach_height_
+    gripper_qpos = grip;
   };
 
   if (state_ == "center_xy") {

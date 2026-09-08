@@ -90,9 +90,10 @@ def generate_launch_description():
             "-entity",
             "openarm_v11",
             "-package_to_model",
-            # v11 body mesh extends ~0.379 m below its root frame; previously
-            # provided by the world_to_openarm joint, now handled at spawn.
-            # "-z", "0.38",
+            # v11 body mesh extends ~0.379 m below its root frame; lift the
+            # model so the body rests on the ground and the arms/camera match
+            # the table-height workcell.
+            "-z", "0.38",
         ],
     )
 

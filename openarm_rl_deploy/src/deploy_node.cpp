@@ -140,7 +140,7 @@ class OpenArmXDeployNode : public rclcpp::Node {
   std::string arm_side_ = "right";
   std::vector<std::string> arm_joint_names_;
   std::string gripper_joint_name_;
-  double gripper_open_ = 0.042;    // 真实夹爪 openarm_*_finger_joint1 上限
+  double gripper_open_ = -0.042;   // v11 真实夹爪 openarm_*_finger_joint1 打开位置
   double gripper_close_ = 0.0;     // 下限
   std::string object_pose_topic_ = "/yolo_detection/object_poses";
   std::string base_frame_ = "openarm_body_link0";

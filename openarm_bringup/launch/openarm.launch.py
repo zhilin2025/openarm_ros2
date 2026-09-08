@@ -30,13 +30,28 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
-def write_zero_torque_param_file(context, gravity_scale):
+def write_zero_torque_param_file(context, gravity_scale, enable_compensation):
     gravity_scale_value = context.perform_substitution(gravity_scale)
-    contents = (
-        "zero_torque_controller:\n"
-        "  ros__parameters:\n"
-        f"    gravity_scale: {gravity_scale_value}\n"
-    )
+    compensation_enabled = context.perform_substitution(enable_compensation) == "true"
+
+    if compensation_enabled:
+        contents = (
+            "zero_torque_controller:\n"
+            "  ros__parameters:\n"
+            f"    gravity_scale: {gravity_scale_value}\n"
+        )
+    else:
+        # Pure zero-torque mode: disable all compensation
+        contents = (
+            "zero_torque_controller:\n"
+            "  ros__parameters:\n"
+            "    gravity_scale: 0.0\n"
+            "    coriolis_scale: 0.0\n"
+            "    kd: 0.0\n"
+            "    coulomb_friction: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]\n"
+            "    viscous_friction: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]\n"
+            "    hold_kp: 0.0\n"
+        )
     param_path = os.path.join(tempfile.gettempdir(), "openarm_zero_torque_params.yaml")
     with open(param_path, "w", encoding="utf-8") as handle:
         handle.write(contents)
@@ -275,8 +290,14 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "enable_gravity_comp",
-            default_value="true",
+            default_value="false",
             description="Enable gravity compensation feedforward node (position control mode).",
+        ),
+        DeclareLaunchArgument(
+            "enable_zero_torque_compensation",
+            default_value="false",
+            description="Enable dynamics compensation in zero-torque/teaching mode. "
+                        "false = pure zero-torque (no gravity/friction/coriolis compensation).",
         ),
         DeclareLaunchArgument(
             "urdf_path",
@@ -371,7 +392,7 @@ def generate_launch_description():
                 "-c",
                 "/controller_manager",
                 "--param-file",
-                write_zero_torque_param_file(context, gravity_scale),
+                write_zero_torque_param_file(context, gravity_scale, LaunchConfiguration("enable_zero_torque_compensation")),
                 "--inactive",
             ],
         )]
