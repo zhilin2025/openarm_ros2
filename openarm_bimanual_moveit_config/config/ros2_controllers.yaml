@@ -15,7 +15,7 @@
 # This config file is used by ros2_control
 controller_manager:
   ros__parameters:
-    update_rate: 200 # Hz
+    update_rate: 100 # Hz
 
     left_arm_controller:
       type: joint_trajectory_controller/JointTrajectoryController
@@ -52,8 +52,8 @@ left_arm_controller:
       # NOTE: velocity removed from state_interfaces to prevent JTC from
       # checking velocity tolerances. velocity in command_interfaces is kept.
     state_publish_rate: 100.0
-    open_loop_control: true
-    allow_nonzero_velocity_at_trajectory_end: true
+    open_loop_control: false
+    allow_nonzero_velocity_at_trajectory_end: false
 
 right_arm_controller:
   ros__parameters:
@@ -74,8 +74,8 @@ right_arm_controller:
       - effort
       # NOTE: velocity removed from state_interfaces (same reason as left arm).
     state_publish_rate: 100.0
-    open_loop_control: true
-    allow_nonzero_velocity_at_trajectory_end: true
+    open_loop_control: false
+    allow_nonzero_velocity_at_trajectory_end: false
 
 left_gripper_controller:
   ros__parameters:
@@ -85,6 +85,11 @@ left_gripper_controller:
       - position
     state_interfaces:
       - position
+      - velocity
+    goal_tolerance: 0.002
+    allow_stalling: true
+    stall_velocity_threshold: 0.001
+    stall_timeout: 0.5
 
 right_gripper_controller:
   ros__parameters:
@@ -94,3 +99,8 @@ right_gripper_controller:
       - position
     state_interfaces:
       - position
+      - velocity
+    goal_tolerance: 0.002
+    allow_stalling: true
+    stall_velocity_threshold: 0.001
+    stall_timeout: 0.5

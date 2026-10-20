@@ -450,15 +450,13 @@ def generate_launch_description():
                 "g_scale": float(context.perform_substitution(gravity_scale)),
                 "enable_compensation": True,
                 "verbose": False,
+                "output_topic": "/left_forward_effort_controller/commands",
                 "joint_names": [
                     "openarm_left_joint1", "openarm_left_joint2", "openarm_left_joint3",
                     "openarm_left_joint4", "openarm_left_joint5", "openarm_left_joint6",
                     "openarm_left_joint7",
                 ],
             }],
-            remappings=[
-                ("torque_commands", "/left_forward_effort_controller/commands"),
-            ],
         ), Node(
             package="openarm_gravity_comp",
             executable="gravity_comp_node",
@@ -468,15 +466,13 @@ def generate_launch_description():
                 "g_scale": float(context.perform_substitution(gravity_scale)),
                 "enable_compensation": True,
                 "verbose": False,
+                "output_topic": "/right_forward_effort_controller/commands",
                 "joint_names": [
                     "openarm_right_joint1", "openarm_right_joint2", "openarm_right_joint3",
                     "openarm_right_joint4", "openarm_right_joint5", "openarm_right_joint6",
                     "openarm_right_joint7",
                 ],
             }],
-            remappings=[
-                ("torque_commands", "/right_forward_effort_controller/commands"),
-            ],
         )] if context.perform_substitution(
             LaunchConfiguration("enable_gravity_comp")) == "true" else []
     )
@@ -500,8 +496,11 @@ def generate_launch_description():
         period=1.0, actions=[controller_spawner_func])
     delayed_gripper = TimerAction(period=1.0, actions=[gripper_spawner])
     delayed_zero_torque = TimerAction(period=1.0, actions=[zero_torque_spawner])
-    delayed_forward_effort = TimerAction(period=1.0, actions=[forward_effort_spawner])
-    delayed_gravity_comp = TimerAction(period=2.0, actions=[gravity_comp_node_spawner])
+    # Effort-only feedforward must not activate before both JTCs. Otherwise
+    # hardware temporarily interprets it as teaching mode (Kp=0), as captured
+    # in the 2026-09-09 real-robot log. Give the arm spawners time to finish.
+    delayed_forward_effort = TimerAction(period=5.0, actions=[forward_effort_spawner])
+    delayed_gravity_comp = TimerAction(period=6.0, actions=[gravity_comp_node_spawner])
 
     return LaunchDescription(
         declared_arguments

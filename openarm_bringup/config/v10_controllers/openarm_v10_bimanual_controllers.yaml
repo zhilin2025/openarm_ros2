@@ -15,7 +15,7 @@
 
 controller_manager:
   ros__parameters:
-    update_rate: 200  # Hz
+    update_rate: 100  # Hz; dual-arm classic CAN stays below bus saturation
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
@@ -113,27 +113,32 @@ left_joint_trajectory_controller:
     state_publish_rate: 100.0 # Defaults to 50
     action_monitor_rate: 50.0 # Defaults to 20
 
-    open_loop_control: true
+    # Use measured joint state when a new goal starts.  Open-loop mode starts
+    # from the previous desired target and causes the visible downward/return
+    # step when the real arm has not quite reached that target.
+    open_loop_control: false
     allow_nonzero_velocity_at_trajectory_end: false   # 禁止轨迹末端带非零速度，GUI 的五次多项式轨迹本来就是零末速，不受影响
 
     allow_partial_joints_goal: false # Defaults to false
     constraints:
       stopped_velocity_tolerance: 0.01 # Defaults to 0.01
-      goal_time: 2.0 # 轨迹规划结束后，允许控制器继续调整并达到目标点的额外时间（Grace Period，宽限时间）
+      goal_time: 4.0 # 给重力前馈斜率限制和真机末端稳定留出时间
+      # 0.04 rad is the initial work-level gate (~2.3 deg). Replace it with
+      # the measured 95th-percentile value from trajectory_*.summary.json.
       openarm_left_joint1:
-        goal: 0.1
+        goal: 0.04
       openarm_left_joint2:
-        goal: 0.1
+        goal: 0.04
       openarm_left_joint3:
-        goal: 0.1
+        goal: 0.04
       openarm_left_joint4:
-        goal: 0.1
+        goal: 0.04
       openarm_left_joint5:
-        goal: 0.1
+        goal: 0.04
       openarm_left_joint6:
-        goal: 0.1
+        goal: 0.04
       openarm_left_joint7:
-        goal: 0.1
+        goal: 0.04
 
 left_gripper_controller:
   ros__parameters:
@@ -142,6 +147,11 @@ left_gripper_controller:
       - position
     state_interfaces:
       - position
+      - velocity
+    goal_tolerance: 0.002
+    allow_stalling: true
+    stall_velocity_threshold: 0.001
+    stall_timeout: 0.5
 
 
 right_forward_position_controller:
@@ -197,27 +207,27 @@ right_joint_trajectory_controller:
     state_publish_rate: 100.0 # Defaults to 50
     action_monitor_rate: 50.0 # Defaults to 20
 
-    open_loop_control: true
+    open_loop_control: false
     allow_nonzero_velocity_at_trajectory_end: false
 
     allow_partial_joints_goal: false # Defaults to false
     constraints:
       stopped_velocity_tolerance: 0.01 # Defaults to 0.01
-      goal_time: 1.0 # Defaults to 0.0 (start immediately)
+      goal_time: 4.0
       openarm_right_joint1:
-        goal: 0.1
+        goal: 0.04
       openarm_right_joint2:
-        goal: 0.1
+        goal: 0.04
       openarm_right_joint3:
-        goal: 0.1
+        goal: 0.04
       openarm_right_joint4:
-        goal: 0.1
+        goal: 0.04
       openarm_right_joint5:
-        goal: 0.1
+        goal: 0.04
       openarm_right_joint6:
-        goal: 0.1
+        goal: 0.04
       openarm_right_joint7:
-        goal: 0.1
+        goal: 0.04
 
 right_gripper_controller:
   ros__parameters:
@@ -226,6 +236,11 @@ right_gripper_controller:
       - position
     state_interfaces:
       - position
+      - velocity
+    goal_tolerance: 0.002
+    allow_stalling: true
+    stall_velocity_threshold: 0.001
+    stall_timeout: 0.5
 
 left_zero_torque_controller:
   ros__parameters:
@@ -238,13 +253,15 @@ left_zero_torque_controller:
       - openarm_left_joint6
       - openarm_left_joint7
     kd: 0.0
-    gravity_scale: 1.05
-    coriolis_scale: 1.0
-    coulomb_friction: [0.3, 0.3, 0.2, 0.2, 0.1, 0.1, 0.1]
-    viscous_friction: [0.1, 0.1, 0.05, 0.05, 0.02, 0.02, 0.02]
+    gravity_scale: 0.0
+    coriolis_scale: 0.0
+    coulomb_friction: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    viscous_friction: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     friction_velocity_epsilon: 0.01
-    tau_limits: [20.0, 20.0, 7.0, 7.0, 2.0, 2.0, 2.0]
-    hold_kp: 5.0
+    tau_limits: [12.0, 12.0, 5.0, 5.0, 1.5, 1.5, 1.5]
+    torque_slew_rates: [3.0, 3.0, 1.5, 1.5, 0.5, 0.5, 0.5]
+    activation_ramp_time: 3.0
+    hold_kp: 0.0
     hold_velocity_threshold: 0.05
     hold_timeout: 0.5
     robot_description_node: controller_manager
@@ -260,13 +277,15 @@ right_zero_torque_controller:
       - openarm_right_joint6
       - openarm_right_joint7
     kd: 0.0
-    gravity_scale: 1.05
-    coriolis_scale: 1.0
-    coulomb_friction: [0.3, 0.3, 0.2, 0.2, 0.1, 0.1, 0.1]
-    viscous_friction: [0.1, 0.1, 0.05, 0.05, 0.02, 0.02, 0.02]
+    gravity_scale: 0.0
+    coriolis_scale: 0.0
+    coulomb_friction: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    viscous_friction: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     friction_velocity_epsilon: 0.01
-    tau_limits: [20.0, 20.0, 7.0, 7.0, 2.0, 2.0, 2.0]
-    hold_kp: 5.0
+    tau_limits: [12.0, 12.0, 5.0, 5.0, 1.5, 1.5, 1.5]
+    torque_slew_rates: [3.0, 3.0, 1.5, 1.5, 0.5, 0.5, 0.5]
+    activation_ramp_time: 3.0
+    hold_kp: 0.0
     hold_velocity_threshold: 0.05
     hold_timeout: 0.5
     robot_description_node: controller_manager

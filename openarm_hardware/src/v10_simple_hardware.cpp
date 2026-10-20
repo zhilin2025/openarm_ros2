@@ -168,6 +168,12 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
     zero_torque_kd_ = std::clamp(zero_torque_kd_, 0.0, 5.0);
   }
 
+  it = info.hardware_parameters.find("allow_robstride_effort_commands");
+  allow_robstride_effort_commands_ =
+      (it == info.hardware_parameters.end())
+          ? false
+          : parse_bool(it->second, false);
+
   it = info.hardware_parameters.find("limit_margin");
   if (it != info.hardware_parameters.end()) {
     limit_margin_ = std::max(0.0, std::stod(it->second));
@@ -249,6 +255,13 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "Limit protection: margin=%.3f, stop_margin=%.3f, decel_factor=%.2f",
               limit_margin_, limit_stop_margin_, limit_decel_factor_);
+
+  if (!allow_robstride_effort_commands_) {
+    RCLCPP_WARN(
+        rclcpp::get_logger("OpenArm_v10HW"),
+        "All non-zero RobStride effort commands are hardware-blocked pending "
+        "v11 torque-sign calibration");
+  }
 
   if (motor_backend_ == MotorBackend::kRobStride) {
     RCLCPP_INFO(
@@ -497,6 +510,8 @@ hardware_interface::return_type OpenArm_v10HW::perform_command_mode_switch(
   // In bimanual setups, the resource manager passes ALL interfaces from ALL
   // hardware instances to each instance's perform_command_mode_switch.
   const std::string my_prefix = "openarm_" + arm_prefix_;
+  const int previous_position_claims = position_interfaces_claimed_;
+  const int previous_effort_claims = effort_interfaces_claimed_;
 
   // A controller switch must never be allowed to expose position interfaces
   // while the hardware is still using the initial/stale 0.0 state cache.
@@ -527,19 +542,26 @@ hardware_interface::return_type OpenArm_v10HW::perform_command_mode_switch(
   for (const auto& iface : start_interfaces) {
     if (iface.find(my_prefix) == std::string::npos) continue;
     if (iface.find("position") != std::string::npos) position_interfaces_claimed_++;
+    if (iface.find("velocity") != std::string::npos) velocity_interfaces_claimed_++;
     if (iface.find("effort") != std::string::npos) effort_interfaces_claimed_++;
   }
   for (const auto& iface : stop_interfaces) {
     if (iface.find(my_prefix) == std::string::npos) continue;
     if (iface.find("position") != std::string::npos) position_interfaces_claimed_--;
+    if (iface.find("velocity") != std::string::npos) velocity_interfaces_claimed_--;
     if (iface.find("effort") != std::string::npos) effort_interfaces_claimed_--;
+  }
+  if (previous_effort_claims != effort_interfaces_claimed_) {
+    nonzero_effort_seen_ = false;
+    blocked_feedforward_logged_ = false;
   }
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "[%s] perform_command_mode_switch: start=%zu stop=%zu => "
-              "pos_claimed=%d effort_claimed=%d",
+              "pos_claimed=%d vel_claimed=%d effort_claimed=%d",
               arm_prefix_.c_str(), start_interfaces.size(), stop_interfaces.size(),
-              position_interfaces_claimed_, effort_interfaces_claimed_);
+              position_interfaces_claimed_, velocity_interfaces_claimed_,
+              effort_interfaces_claimed_);
 
   // Teaching (zero-torque) mode only when effort is claimed AND position is NOT claimed.
   // When both are claimed, we're in feedforward mode (position control + gravity feedforward).
@@ -548,12 +570,29 @@ hardware_interface::return_type OpenArm_v10HW::perform_command_mode_switch(
   const bool should_be_effort_mode =
       (effort_interfaces_claimed_ > 0) &&
       (position_interfaces_claimed_ <= gripper_position_claims);
+  const bool arm_position_controller_was_stopped =
+      previous_position_claims > gripper_position_claims &&
+      position_interfaces_claimed_ <= gripper_position_claims;
 
   if (should_be_effort_mode && !effort_mode_) {
-    effort_mode_ = true;
-    sync_commands_to_current_state();
-    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
-                "Switched to effort/teaching mode (Kp=0, Kd=%.3f)", zero_torque_kd_);
+    if (arm_position_controller_was_stopped) {
+      effort_mode_ = true;
+      sync_commands_to_current_state();
+      RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                  "Switched to effort/teaching mode (Kp=0, Kd=%.3f)",
+                  zero_torque_kd_);
+    } else {
+      // The gravity feedforward spawner can become ready before JTC during a
+      // controller-manager restart. Effort-only ownership at startup is not
+      // a teaching request: keep the measured-position hold until JTC claims
+      // its interfaces. The previous behavior briefly set Kp=0 and allowed
+      // the arm to drop during startup.
+      RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                  "[%s] Ignoring premature effort-only activation as a "
+                  "teaching transition; retaining position hold until an "
+                  "arm position controller is active",
+                  arm_prefix_.c_str());
+    }
   }
 
   if (!should_be_effort_mode && effort_mode_) {
@@ -650,17 +689,186 @@ void OpenArm_v10HW::sync_commands_to_current_state() {    // 将当前状态同�
     vel_commands_[i] = 0.0;
     tau_commands_[i] = 0.0;
   }
+
+  if (motor_backend_ == MotorBackend::kRobStride && hand_ &&
+      robstride_gripper_motor_ &&
+      !robstride_gripper_motor_->has_active_fault() &&
+      robstride_gripper_motor_->has_valid_status() &&
+      std::isfinite(robstride_gripper_motor_->position_)) {
+    // Do not clamp the measured value here.  A small encoder/mechanical-zero
+    // offset outside the nominal 0..open range must still be held exactly;
+    // clamping it would create a closing impulse at controller activation.
+    const double motor_position =
+        static_cast<double>(robstride_gripper_motor_->position_);
+    gripper_limited_motor_command_ = motor_position;
+    gripper_motor_command_velocity_ = 0.0;
+    gripper_stall_observation_motor_position_ = motor_position;
+    gripper_stall_locked_motor_position_ = motor_position;
+    gripper_active_requested_motor_position_ = motor_position;
+    gripper_stall_active_ = false;
+    gripper_stall_observation_active_ = false;
+    gripper_command_initialized_ = true;
+    gripper_command_time_ = std::chrono::steady_clock::now();
+    gripper_stall_observation_time_ =
+        std::chrono::steady_clock::time_point::min();
+  }
+}
+
+double OpenArm_v10HW::safe_robstride_gripper_motor_command(
+    double requested_joint) {
+  const double open_motor = gripper_open_motor_radians();
+  const double motor_lower =
+      std::min(GRIPPER_MOTOR_0_RADIANS, open_motor);
+  const double motor_upper =
+      std::max(GRIPPER_MOTOR_0_RADIANS, open_motor);
+  const double requested_motor = std::clamp(
+      joint_to_motor_radians(requested_joint), motor_lower, motor_upper);
+  const double measured_motor =
+      static_cast<double>(robstride_gripper_motor_->position_);
+  const auto now = std::chrono::steady_clock::now();
+  // On the v11 RobStride linkage motor position increases while opening.
+  const bool opening_request = requested_motor > measured_motor;
+  const double stall_observation_seconds = opening_request
+      ? GRIPPER_OPEN_STALL_OBSERVATION_SECONDS
+      : GRIPPER_CLOSE_STALL_OBSERVATION_SECONDS;
+
+  if (!gripper_command_initialized_) {
+    // The first command must start at measured position.  Starting at either
+    // nominal endpoint is dangerous when the mechanical zero has an offset.
+    gripper_limited_motor_command_ = measured_motor;
+    gripper_motor_command_velocity_ = 0.0;
+    gripper_stall_observation_motor_position_ = measured_motor;
+    gripper_stall_observation_active_ = false;
+    gripper_command_initialized_ = true;
+    gripper_command_time_ = now;
+  }
+
+  const bool new_intent =
+      !std::isfinite(gripper_active_requested_motor_position_) ||
+      std::abs(requested_motor - gripper_active_requested_motor_position_) >
+          GRIPPER_NEW_INTENT;
+  if (new_intent) {
+    // A reversal must start from the newest measured position immediately.
+    // Continuing to slew an old opening target after a close request made the
+    // fingers first move farther open and only then reverse.
+    gripper_active_requested_motor_position_ = requested_motor;
+    gripper_limited_motor_command_ = measured_motor;
+    gripper_motor_command_velocity_ = 0.0;
+    gripper_stall_active_ = false;
+    gripper_stall_observation_active_ = false;
+    gripper_stall_observation_motor_position_ = measured_motor;
+    gripper_stall_observation_time_ = std::chrono::steady_clock::time_point::min();
+    gripper_command_time_ = now;
+  }
+
+  if (!std::isfinite(gripper_last_logged_request_) ||
+      std::abs(requested_motor - gripper_last_logged_request_) > 0.01) {
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "[%s] Gripper request: joint=%.5f, motor_target=%.5f, "
+                "motor_measured=%.5f, motor_limited=%.5f, torque=%.3f, "
+                "status_mode=%u",
+                arm_prefix_.c_str(), requested_joint, requested_motor,
+                measured_motor, gripper_limited_motor_command_,
+                static_cast<double>(robstride_gripper_motor_->torque_),
+                static_cast<unsigned int>(robstride_gripper_motor_->pattern));
+    gripper_last_logged_request_ = requested_motor;
+  }
+
+  if (gripper_stall_active_) {
+    // A different target was already handled by new_intent above.  For the
+    // same target, hold once instead of periodically unloading and retrying;
+    // that retry loop was visible as repeated open/retract pulses.
+    gripper_limited_motor_command_ = gripper_stall_locked_motor_position_;
+    gripper_motor_command_velocity_ = 0.0;
+    gripper_command_time_ = now;
+    return gripper_limited_motor_command_;
+  }
+
+  double dt = 0.01;
+  if (gripper_command_time_ != std::chrono::steady_clock::time_point::min()) {
+    dt = std::chrono::duration<double>(now - gripper_command_time_).count();
+  }
+  dt = std::clamp(dt, 0.001, 0.05);
+  // Generate a command-space trapezoidal/S-curve-like profile independent of
+  // measured feedback.  The former feedback-relative clamp acted like a
+  // constant-force controller: static friction made it stick, a delayed move
+  // advanced the bound, then the protection pulled it back.  That was the
+  // observed open/retract staircase.  Acceleration and braking limits keep
+  // this independent trajectory smooth without stepping directly to 1 rad.
+  const double command_error =
+      requested_motor - gripper_limited_motor_command_;
+  const double braking_speed = std::sqrt(
+      2.0 * GRIPPER_MAX_MOTOR_ACCELERATION * std::abs(command_error));
+  const double desired_speed = std::min(GRIPPER_MAX_MOTOR_SPEED, braking_speed);
+  const double desired_velocity = std::copysign(desired_speed, command_error);
+  const double max_velocity_step = GRIPPER_MAX_MOTOR_ACCELERATION * dt;
+  gripper_motor_command_velocity_ += std::clamp(
+      desired_velocity - gripper_motor_command_velocity_,
+      -max_velocity_step, max_velocity_step);
+  const double command_step = gripper_motor_command_velocity_ * dt;
+  if (std::abs(command_step) >= std::abs(command_error)) {
+    gripper_limited_motor_command_ = requested_motor;
+    gripper_motor_command_velocity_ = 0.0;
+  } else {
+    gripper_limited_motor_command_ += command_step;
+  }
+  gripper_command_time_ = now;
+
+  const double position_error =
+      std::abs(gripper_limited_motor_command_ - measured_motor);
+  if (position_error > GRIPPER_STALL_ERROR) {
+    if (!gripper_stall_observation_active_) {
+      // Judge progress over a real time window.  The old per-control-cycle
+      // comparison treated cached/intermittent CAN samples and slow breakaway
+      // motion as a stall after only ~0.5 s.
+      gripper_stall_observation_active_ = true;
+      gripper_stall_observation_motor_position_ = measured_motor;
+      gripper_stall_observation_time_ = now;
+    } else {
+      const double observation_seconds = std::chrono::duration<double>(
+          now - gripper_stall_observation_time_).count();
+      if (observation_seconds >= stall_observation_seconds) {
+        const double progress = std::abs(
+            measured_motor - gripper_stall_observation_motor_position_);
+        if (progress < GRIPPER_STALL_MIN_PROGRESS) {
+          gripper_stall_active_ = true;
+          gripper_stall_locked_motor_position_ = measured_motor;
+          gripper_limited_motor_command_ = measured_motor;
+          gripper_motor_command_velocity_ = 0.0;
+          RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                      "[%s] Gripper stall detected before motor overload: "
+                      "requested=%.5f, measured=%.5f, error=%.5f, "
+                      "progress=%.5f/%.2fs, torque=%.3f; holding here once "
+                      "until a different target is requested",
+                      arm_prefix_.c_str(), requested_motor, measured_motor,
+                      position_error, progress, observation_seconds,
+                      static_cast<double>(robstride_gripper_motor_->torque_));
+        } else {
+          // It is moving, even if more slowly than the command ramp.  Start a
+          // fresh observation window instead of accumulating stale cycles.
+          gripper_stall_observation_motor_position_ = measured_motor;
+          gripper_stall_observation_time_ = now;
+        }
+      }
+    }
+  } else {
+    gripper_stall_observation_active_ = false;
+  }
+
+  return gripper_limited_motor_command_;
 }
 
 bool OpenArm_v10HW::robstride_feedback_ready() const {
   constexpr auto kMaxFeedbackAge = std::chrono::milliseconds(250);
   for (const auto& motor : robstride_arm_motors_) {
-    if (!motor || !motor->status_is_fresh(kMaxFeedbackAge)) {
+    if (!motor || motor->has_active_fault() ||
+        !motor->status_is_fresh(kMaxFeedbackAge)) {
       return false;
     }
   }
   if (hand_) {
     if (!robstride_gripper_motor_ ||
+        robstride_gripper_motor_->has_active_fault() ||
         !robstride_gripper_motor_->status_is_fresh(kMaxFeedbackAge)) {
       return false;
     }
@@ -975,8 +1183,17 @@ hardware_interface::return_type OpenArm_v10HW::read_damiao_backend() {
 }
 
 hardware_interface::return_type OpenArm_v10HW::read_robstride_backend() {
+  // A status reply normally belongs to the previous cycle's motion command.
+  // Keep these receives short: 16 sequential 2 ms waits exceeded a 200 Hz
+  // dual-arm control period whenever frames were missing and made motion
+  // visibly advance in bursts.
+  constexpr double kReceivePollSeconds = 0.00025;
   for (size_t i = 0; i < ARM_DOF && i < robstride_arm_motors_.size(); ++i) {
-    const bool received = robstride_arm_motors_[i]->receive_status_frame(0.002, false);
+    const bool received =
+        robstride_arm_motors_[i]->receive_status_frame(kReceivePollSeconds, false);
+    // Keep the newest motor response, not the oldest queued response.  This
+    // is essential for the command-lead limiter and gripper stall detector.
+    robstride_arm_motors_[i]->drain_status_frames();
     if (!received) {
       // Keep publishing cached values so state interfaces do not freeze at
       // initialization values when frames are intermittently missed.
@@ -988,7 +1205,8 @@ hardware_interface::return_type OpenArm_v10HW::read_robstride_backend() {
 
   if (hand_ && robstride_gripper_motor_ && joint_names_.size() > ARM_DOF) {
     const bool received =
-        robstride_gripper_motor_->receive_status_frame(0.002, false);
+        robstride_gripper_motor_->receive_status_frame(kReceivePollSeconds, false);
+    robstride_gripper_motor_->drain_status_frames();
     if (!received) {
       // return hardware_interface::return_type::OK;
       // Keep publishing cached values so gripper state does not freeze when
@@ -996,8 +1214,33 @@ hardware_interface::return_type OpenArm_v10HW::read_robstride_backend() {
     }
     pos_states_[ARM_DOF] =
         motor_radians_to_joint(robstride_gripper_motor_->position_);
-    vel_states_[ARM_DOF] = robstride_gripper_motor_->velocity_;
+    const double open_joint =
+        arm_type_ == "v11" ? -GRIPPER_JOINT_0_POSITION
+                           : GRIPPER_JOINT_0_POSITION;
+    vel_states_[ARM_DOF] = robstride_gripper_motor_->velocity_ *
+                           (open_joint / gripper_open_motor_radians());
     tau_states_[ARM_DOF] = robstride_gripper_motor_->torque_;
+
+    if (robstride_gripper_motor_->has_active_fault() &&
+        !gripper_stall_active_ &&
+        std::isfinite(robstride_gripper_motor_->position_)) {
+      // Keep an automatically-cleared drive from replaying the unreachable
+      // target that caused the fault.  A different open/close request is
+      // required before motion resumes.
+      gripper_stall_active_ = true;
+      gripper_stall_observation_active_ = false;
+      gripper_stall_locked_motor_position_ =
+          robstride_gripper_motor_->position_;
+      gripper_limited_motor_command_ =
+          gripper_stall_locked_motor_position_;
+      gripper_motor_command_velocity_ = 0.0;
+      RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                   "[%s] Gripper drive fault 0x%x latched; target replay "
+                   "blocked until a different gripper command is received",
+                   arm_prefix_.c_str(),
+                   static_cast<unsigned int>(
+                       robstride_gripper_motor_->fault_value()));
+    }
   }
 
   if (!initial_commands_synced_ && robstride_feedback_ready()) {
@@ -1068,9 +1311,38 @@ hardware_interface::return_type OpenArm_v10HW::write_robstride_backend() {
     if (!feedback_blocked_logged_) {
       RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
                    "[%s] Motion output inhibited: RobStride feedback is not "
-                   "valid/fresh for every motor",
+                   "valid/fresh for every motor; sending a low-gain recovery "
+                   "hold until feedback resumes",
                    arm_prefix_.c_str());
       feedback_blocked_logged_ = true;
+    }
+    // RobStride status is returned in response to motion commands.  Returning
+    // here used to create a permanent deadlock: stale feedback stopped all
+    // commands, therefore no motor could ever produce fresh feedback again.
+    // Send a low-gain hold at each cached measured position to solicit status
+    // without replaying a possibly far-ahead trajectory target.  If a motor
+    // has never supplied valid feedback, use damping only (kp=0).
+    constexpr float kRecoveryKp = 10.0f;
+    constexpr float kRecoveryKd = 1.0f;
+    for (auto& motor : robstride_arm_motors_) {
+      if (!motor) {
+        continue;
+      }
+      const bool valid = !motor->has_active_fault() &&
+                         motor->has_valid_status() &&
+                         std::isfinite(motor->position_);
+      motor->send_motion_command(
+          0.0f, valid ? motor->position_ : 0.0f, 0.0f,
+          valid ? kRecoveryKp : 0.0f, kRecoveryKd);
+    }
+    if (hand_ && robstride_gripper_motor_) {
+      const bool valid = !robstride_gripper_motor_->has_active_fault() &&
+                         robstride_gripper_motor_->has_valid_status() &&
+                         std::isfinite(robstride_gripper_motor_->position_);
+      robstride_gripper_motor_->send_motion_command(
+          0.0f, valid ? robstride_gripper_motor_->position_ : 0.0f, 0.0f,
+          valid ? static_cast<float>(GRIPPER_KP) : 0.0f,
+          static_cast<float>(GRIPPER_KD));
     }
     return hardware_interface::return_type::OK;
   }
@@ -1078,6 +1350,39 @@ hardware_interface::return_type OpenArm_v10HW::write_robstride_backend() {
 
   const bool effort_mode = effort_mode_.load();
   const auto arm_limits = compute_arm_limits();
+
+  // Inspect the complete ROS effort path, not merely interface ownership:
+  // controller command -> exported hardware memory.
+  // A one-shot message is enough for real-robot logs without burdening the
+  // control loop.  It resets whenever effort ownership changes.
+  if (effort_interfaces_claimed_ > 0 && !nonzero_effort_seen_) {
+    size_t peak_index = 0;
+    double peak_effort = 0.0;
+    for (size_t i = 0; i < ARM_DOF && i < tau_commands_.size(); ++i) {
+      if (std::abs(tau_commands_[i]) > std::abs(peak_effort)) {
+        peak_index = i;
+        peak_effort = tau_commands_[i];
+      }
+    }
+    if (std::abs(peak_effort) > 0.01) {
+      nonzero_effort_seen_ = true;
+      if (allow_robstride_effort_commands_) {
+        RCLCPP_INFO(
+            rclcpp::get_logger("OpenArm_v10HW"),
+            "[%s] Non-zero effort command accepted by hardware: "
+            "joint%zu=%.3f Nm",
+            arm_prefix_.c_str(), peak_index + 1, peak_effort);
+      } else if (!blocked_feedforward_logged_) {
+        blocked_feedforward_logged_ = true;
+        RCLCPP_ERROR(
+            rclcpp::get_logger("OpenArm_v10HW"),
+            "[%s] BLOCKED unsafe non-zero effort command: "
+            "joint%zu=%.3f Nm. v11 torque signs are not calibrated",
+            arm_prefix_.c_str(), peak_index + 1, peak_effort);
+      }
+    }
+  }
+
   auto apply_effort_limit = [&](size_t idx, double pos, float tau) {
     if (!effort_mode) {
       return tau;
@@ -1106,8 +1411,24 @@ hardware_interface::return_type OpenArm_v10HW::write_robstride_backend() {
                                      : static_cast<float>(kd_[i]);
     const float cmd_pos = effort_mode ? static_cast<float>(pos_states_[i])
                                       : static_cast<float>(pos_commands_[i]);
-    const float cmd_vel = effort_mode ? 0.0f : static_cast<float>(vel_commands_[i]);
-    float cmd_tau = static_cast<float>(tau_commands_[i]);
+    float cmd_vel = 0.0f;
+    if (!effort_mode) {
+      if (velocity_interfaces_claimed_ > 0) {
+        cmd_vel = static_cast<float>(vel_commands_[i]);
+      } else {
+        const double position_error = pos_commands_[i] - pos_states_[i];
+        cmd_vel = static_cast<float>(std::clamp(
+            POSITION_ONLY_VELOCITY_GAIN * position_error,
+            -POSITION_ONLY_MAX_VELOCITY,
+            POSITION_ONLY_MAX_VELOCITY));
+      }
+    }
+    // Until the v11 torque coordinate mapping is calibrated, neither position
+    // feedforward nor teaching-mode model compensation may reach RobStride.
+    // Teaching with zero torque and damping remains available.
+    float cmd_tau = allow_robstride_effort_commands_
+                        ? static_cast<float>(tau_commands_[i])
+                        : 0.0f;
     cmd_tau = apply_effort_limit(i, pos_states_[i], cmd_tau);
     robstride_arm_motors_[i]->send_motion_command(
         cmd_tau,
@@ -1118,8 +1439,8 @@ hardware_interface::return_type OpenArm_v10HW::write_robstride_backend() {
   }
 
   if (hand_ && robstride_gripper_motor_ && joint_names_.size() > ARM_DOF) {
-    const float gripper_motor_command =
-        static_cast<float>(joint_to_motor_radians(pos_commands_[ARM_DOF]));
+    const float gripper_motor_command = static_cast<float>(
+        safe_robstride_gripper_motor_command(pos_commands_[ARM_DOF]));
     robstride_gripper_motor_->send_motion_command(
         0.0f, gripper_motor_command, 0.0f, static_cast<float>(GRIPPER_KP),
         static_cast<float>(GRIPPER_KD));
@@ -1168,21 +1489,30 @@ void OpenArm_v10HW::return_to_zero_robstride() {
 }
 
 // Gripper mapping helper functions
+double OpenArm_v10HW::gripper_open_motor_radians() const {
+  // Real-robot validation on both v11 RobStride grippers confirmed that
+  // negative motor rotation closes the fingers, so their open direction is
+  // positive.  The Damiao reference assembly uses the opposite motor sign.
+  return motor_backend_ == MotorBackend::kRobStride
+             ? GRIPPER_ROBSTRIDE_OPEN_MOTOR_RADIANS
+             : GRIPPER_DAMIAO_OPEN_MOTOR_RADIANS;
+}
+
 double OpenArm_v10HW::joint_to_motor_radians(double joint_value) {
   // V10: joint 0.044=open; V11: joint -0.044=open.
-  // Both map to the same motor open position (-1.0472 rad).
+  // The backend-specific motor sign is deliberately handled only here.
   const double open_joint =
       arm_type_ == "v11" ? -GRIPPER_JOINT_0_POSITION
                          : GRIPPER_JOINT_0_POSITION;
-  return (joint_value / open_joint) * GRIPPER_MOTOR_1_RADIANS;
+  return (joint_value / open_joint) * gripper_open_motor_radians();
 }
 
 double OpenArm_v10HW::motor_radians_to_joint(double motor_radians) {
-  // Motor 0 rad=closed; Motor -1.0472 rad=open.
+  // Motor 0 rad=closed; the open motor sign depends on the backend.
   const double open_joint =
       arm_type_ == "v11" ? -GRIPPER_JOINT_0_POSITION
                          : GRIPPER_JOINT_0_POSITION;
-  return open_joint * (motor_radians / GRIPPER_MOTOR_1_RADIANS);
+  return open_joint * (motor_radians / gripper_open_motor_radians());
 }
 
 }  // namespace openarm_hardware

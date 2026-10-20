@@ -62,10 +62,10 @@ private:
   std::vector<pinocchio::JointIndex> joint_ids_;
 
   // Gravity compensation
-  double gravity_scale_{1.05};  // Slightly over 1.0, borrowed from openarmx
+  double gravity_scale_{0.0};
 
   // Coriolis compensation
-  double coriolis_scale_{1.0};
+  double coriolis_scale_{0.0};
 
   // Controller-level damping (now actually used, separate from hardware zero_torque_kd)
   double kd_{0.0};
@@ -76,10 +76,14 @@ private:
   double friction_velocity_epsilon_{0.01};    // tanh smoothing width [rad/s]
 
   // Per-joint torque limits (borrowed from openarmx)
-  std::vector<double> tau_limits_{20.0, 20.0, 7.0, 7.0, 2.0, 2.0, 2.0};
+  std::vector<double> tau_limits_{12.0, 12.0, 5.0, 5.0, 1.5, 1.5, 1.5};
+  std::vector<double> torque_slew_rates_{3.0, 3.0, 1.5, 1.5, 0.5, 0.5, 0.5};
+  std::vector<double> previous_output_torques_;
+  double activation_ramp_time_{3.0};
+  rclcpp::Time activation_time_;
 
   // Position hold logic (lock position when user releases the arm)
-  double hold_kp_{5.0};
+  double hold_kp_{0.0};
   double hold_velocity_threshold_{0.05};  // [rad/s]
   double hold_timeout_{0.5};              // [s]
   std::vector<double> q_hold_;            // locked position

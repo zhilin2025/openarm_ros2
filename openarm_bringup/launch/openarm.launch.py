@@ -421,10 +421,8 @@ def generate_launch_description():
                 "g_scale": float(context.perform_substitution(gravity_scale)),
                 "enable_compensation": True,
                 "verbose": False,
+                "output_topic": "/forward_effort_controller/commands",
             }],
-            remappings=[
-                ("torque_commands", "/forward_effort_controller/commands"),
-            ],
         )] if context.perform_substitution(
             LaunchConfiguration("enable_gravity_comp")) == "true" else []
     )

@@ -28,15 +28,18 @@ namespace openarm_hardware
 controller_interface::CallbackReturn ZeroTorqueController::on_init()
 {
   auto_declare<std::vector<std::string>>("joints", std::vector<std::string>{});
-  auto_declare<double>("gravity_scale", 1.05);
-  auto_declare<double>("coriolis_scale", 1.0);
+  auto_declare<double>("gravity_scale", 0.0);
+  auto_declare<double>("coriolis_scale", 0.0);
   auto_declare<double>("kd", 0.0);  // 硬件层在示教模式切换的时候已经提供了PD控制的阻尼kd：zero_torque_kd=0.3，这里就不需要再叠加到控制器层了（tau_out += -kd_ * velocity），避免重复阻尼导致关节运动不灵敏
   auto_declare<std::vector<double>>("coulomb_friction", std::vector<double>{});
   auto_declare<std::vector<double>>("viscous_friction", std::vector<double>{});
   auto_declare<double>("friction_velocity_epsilon", 0.01);
   auto_declare<std::vector<double>>(
-    "tau_limits", std::vector<double>{20.0, 20.0, 7.0, 7.0, 2.0, 2.0, 2.0});
-  auto_declare<double>("hold_kp", 5.0);
+    "tau_limits", std::vector<double>{12.0, 12.0, 5.0, 5.0, 1.5, 1.5, 1.5});
+  auto_declare<std::vector<double>>(
+    "torque_slew_rates", std::vector<double>{3.0, 3.0, 1.5, 1.5, 0.5, 0.5, 0.5});
+  auto_declare<double>("activation_ramp_time", 3.0);
+  auto_declare<double>("hold_kp", 0.0);
   auto_declare<double>("hold_velocity_threshold", 0.05);
   auto_declare<double>("hold_timeout", 0.5);
   auto_declare<std::string>("urdf_path", "");
@@ -74,7 +77,16 @@ controller_interface::CallbackReturn ZeroTorqueController::on_configure(
 
   // Torque limits — pad to n
   tau_limits_ = get_node()->get_parameter("tau_limits").as_double_array();
-  while (tau_limits_.size() < n) tau_limits_.push_back(20.0);
+  while (tau_limits_.size() < n) tau_limits_.push_back(1.5);
+  torque_slew_rates_ =
+    get_node()->get_parameter("torque_slew_rates").as_double_array();
+  while (torque_slew_rates_.size() < n) torque_slew_rates_.push_back(0.5);
+  for (auto & rate : torque_slew_rates_) {
+    rate = std::clamp(rate, 0.05, 20.0);
+  }
+  activation_ramp_time_ = std::clamp(
+    get_node()->get_parameter("activation_ramp_time").as_double(), 0.5, 10.0);
+  previous_output_torques_.assign(n, 0.0);
 
   // Position hold parameters
   hold_kp_ = get_node()->get_parameter("hold_kp").as_double();
@@ -159,6 +171,8 @@ controller_interface::CallbackReturn ZeroTorqueController::on_activate(
 {
   // Reset hold state on activation
   holding_ = false;
+  activation_time_ = get_node()->now();
+  std::fill(previous_output_torques_.begin(), previous_output_torques_.end(), 0.0);
   RCLCPP_WARN(get_node()->get_logger(),
               "Zero-torque/teaching mode ACTIVATED "
               "(gravity_scale=%.2f, coriolis_scale=%.2f, kd=%.3f, hold_kp=%.1f, pinocchio=%s)",
@@ -184,7 +198,7 @@ controller_interface::CallbackReturn ZeroTorqueController::on_deactivate(
       clamp(±tau_limits)                        // 力矩限幅 (新增!)
 */
 controller_interface::return_type ZeroTorqueController::update(
-  const rclcpp::Time & time, const rclcpp::Duration & /*period*/)
+  const rclcpp::Time & time, const rclcpp::Duration & period)
 {
   const size_t n = joint_names_.size();
   std::vector<double> output_torques(n, 0.0);
@@ -271,11 +285,27 @@ controller_interface::return_type ZeroTorqueController::update(
           }
         }
 
-        // Per-joint torque clamping (borrowed from openarmx)
+        // Never apply the model torque as a step on controller activation.
+        // A wrong scale/sign or an imperfect URDF must become observable
+        // gradually instead of lifting/spinning the arm immediately.
+        const double elapsed = std::max(0.0, (time - activation_time_).seconds());
+        const double ramp = std::clamp(
+          elapsed / std::max(activation_ramp_time_, 1e-3), 0.0, 1.0);
+        tau_out *= ramp;
+
+        // Per-joint torque clamping and rate limiting.
         const double limit = (i < tau_limits_.size()) ? tau_limits_[i] : 20.0;
         tau_out = std::clamp(tau_out, -limit, limit);
 
+        const double dt = std::clamp(period.seconds(), 0.0, 0.1);
+        const double max_delta = torque_slew_rates_[i] * dt;
+        tau_out = std::clamp(
+          tau_out,
+          previous_output_torques_[i] - max_delta,
+          previous_output_torques_[i] + max_delta);
+
         output_torques[i] = tau_out;
+        previous_output_torques_[i] = tau_out;
       }
     } catch (const std::exception & e) {
       RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 2000,

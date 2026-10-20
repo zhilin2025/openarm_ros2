@@ -26,8 +26,10 @@ GravityCompNode::GravityCompNode() : Node("gravity_comp_node")
 {
   // Declare parameters
   this->declare_parameter<std::string>("urdf_path", "/home/zl/openarm_ws/src/openarm_description/urdf/robot/openarm_v11.urdf");
-  this->declare_parameter<double>("g_scale", 1.05);
-  this->declare_parameter<bool>("enable_compensation", true);
+  this->declare_parameter<std::string>(
+    "output_topic", "/forward_effort_controller/commands");
+  this->declare_parameter<double>("g_scale", 0.3);
+  this->declare_parameter<bool>("enable_compensation", false);
   this->declare_parameter<bool>("verbose", false);
   this->declare_parameter<std::vector<std::string>>(
     "joint_names",
@@ -35,19 +37,30 @@ GravityCompNode::GravityCompNode() : Node("gravity_comp_node")
       "openarm_joint1", "openarm_joint2", "openarm_joint3",
       "openarm_joint4", "openarm_joint5", "openarm_joint6", "openarm_joint7"});
   this->declare_parameter<std::vector<double>>(
-    "tau_limits", std::vector<double>{20.0, 20.0, 7.0, 7.0, 2.0, 2.0, 2.0});
+    "tau_limits", std::vector<double>{12.0, 12.0, 5.0, 5.0, 1.5, 1.5, 1.5});
+  this->declare_parameter<std::vector<double>>(
+    "torque_slew_rates", std::vector<double>{3.0, 3.0, 1.5, 1.5, 0.5, 0.5, 0.5});
 
   // Read parameters
   urdf_path_ = this->get_parameter("urdf_path").as_string();
+  output_topic_ = this->get_parameter("output_topic").as_string();
   g_scale_ = this->get_parameter("g_scale").as_double();
   enable_compensation_ = this->get_parameter("enable_compensation").as_bool();
   verbose_ = this->get_parameter("verbose").as_bool();
   joint_names_ = this->get_parameter("joint_names").as_string_array();
   tau_limits_ = this->get_parameter("tau_limits").as_double_array();
+  torque_slew_rates_ = this->get_parameter("torque_slew_rates").as_double_array();
+  previous_output_torques_.assign(joint_names_.size(), 0.0);
+  previous_update_time_ = this->now();
+  previous_diagnostic_time_ = previous_update_time_;
 
   if (urdf_path_.empty()) {
     RCLCPP_FATAL(get_logger(), "Parameter 'urdf_path' is required but not set.");
     throw std::runtime_error("urdf_path not set");
+  }
+  if (output_topic_.empty()) {
+    RCLCPP_FATAL(get_logger(), "Parameter 'output_topic' is required but not set.");
+    throw std::runtime_error("output_topic not set");
   }
 
   // Load Pinocchio model
@@ -64,7 +77,7 @@ GravityCompNode::GravityCompNode() : Node("gravity_comp_node")
 
   // Publisher to forward_effort_controller
   torque_pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>(
-    "~/torque_commands", 10);
+    output_topic_, 10);
 
   // Subscriber to joint states
   joint_state_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
@@ -90,7 +103,9 @@ GravityCompNode::GravityCompNode() : Node("gravity_comp_node")
     });
 
   RCLCPP_INFO(get_logger(),
-              "GravityCompNode started. g_scale=%.3f enable_compensation=%s pinocchio=%s",
+              "GravityCompNode started. output='%s' g_scale=%.3f "
+              "enable_compensation=%s pinocchio=%s",
+              torque_pub_->get_topic_name(),
               g_scale_, enable_compensation_ ? "true" : "false",
               pinocchio_ok_ ? "ok" : "FAILED");
 }
@@ -138,6 +153,8 @@ void GravityCompNode::joint_state_callback(
     auto out = std_msgs::msg::Float64MultiArray();
     out.data.assign(ndof, 0.0);
     torque_pub_->publish(out);
+    std::fill(previous_output_torques_.begin(), previous_output_torques_.end(), 0.0);
+    previous_update_time_ = this->now();
     return;
   }
 
@@ -187,15 +204,27 @@ void GravityCompNode::joint_state_callback(
     return;
   }
 
-  // Scale and clamp — borrowed from openarmx architecture
+  // Scale, clamp and rate-limit.  Compensation used to appear as a full
+  // torque step as soon as it was enabled, which is unsafe when the model or
+  // mounting direction has not yet been calibrated on the real arm.
   auto out = std_msgs::msg::Float64MultiArray();
   out.data.resize(ndof);
+  const auto now = this->now();
+  const double dt = std::clamp((now - previous_update_time_).seconds(), 0.0, 0.1);
   for (size_t j = 0; j < ndof; ++j) {
     double tau_motor = g_scale_ * gravity_torques[j];
     double limit = (j < tau_limits_.size()) ? tau_limits_[j]
                                              : std::numeric_limits<double>::infinity();
     tau_motor = std::clamp(tau_motor, -limit, limit);
+    const double slew = j < torque_slew_rates_.size()
+      ? std::max(0.05, torque_slew_rates_[j]) : 0.5;
+    const double max_delta = slew * dt;
+    tau_motor = std::clamp(
+      tau_motor,
+      previous_output_torques_[j] - max_delta,
+      previous_output_torques_[j] + max_delta);
     out.data[j] = tau_motor;
+    previous_output_torques_[j] = tau_motor;
 
     if (verbose_) {
       RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
@@ -203,8 +232,33 @@ void GravityCompNode::joint_state_callback(
                            j, q[j], gravity_torques[j], tau_motor);
     }
   }
+  previous_update_time_ = now;
 
   torque_pub_->publish(out);
+
+  // Do not silently run an apparently healthy compensation node when its
+  // command topic is disconnected.  This exact condition previously made
+  // changing g_scale from 0.30 to 0.70 have no effect on the real arm.
+  if ((now - previous_diagnostic_time_).seconds() >= 2.0) {
+    previous_diagnostic_time_ = now;
+    const size_t subscribers = torque_pub_->get_subscription_count();
+    const double max_abs_torque = out.data.empty() ? 0.0 :
+      std::abs(*std::max_element(
+        out.data.begin(), out.data.end(),
+        [](double lhs, double rhs) {return std::abs(lhs) < std::abs(rhs);}));
+    if (subscribers == 0) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Gravity feedforward DISCONNECTED: output='%s' has no subscribers",
+        torque_pub_->get_topic_name());
+    } else {
+      RCLCPP_INFO(
+        get_logger(),
+        "Gravity feedforward connected: output='%s' subscribers=%zu "
+        "max_abs_tau=%.3f Nm",
+        torque_pub_->get_topic_name(), subscribers, max_abs_torque);
+    }
+  }
 }
 
 }  // namespace openarm_gravity_comp
